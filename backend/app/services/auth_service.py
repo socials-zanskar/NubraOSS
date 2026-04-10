@@ -12,6 +12,7 @@ from app.schemas import (
     VerifyOtpRequest,
     VerifyOtpResponse,
 )
+from app.services.instrument_service import instrument_service
 
 
 class AuthService:
@@ -195,7 +196,13 @@ class AuthService:
 
         environment = flow["environment"]
         account_suffix = flow["phone"][-4:]
+        device_id = flow["device_id"]
         del self._flows[payload.flow_id]
+
+        try:
+            instrument_service.warm_cache(session_token, environment, device_id)
+        except HTTPException:
+            pass
 
         return VerifyMpinResponse(
             access_token=session_token,

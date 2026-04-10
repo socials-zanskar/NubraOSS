@@ -8,7 +8,7 @@ First milestone:
 
 - standalone Nubra login flow
 - backend auth contract with explicit staged steps
-- frontend screen for environment, phone, device ID, OTP, and MPIN
+- frontend screen for environment, phone, OTP, and MPIN
 
 This now follows the REST login sequence in `C:\Nubra\Algo\RESTAPI.py`:
 
@@ -18,6 +18,19 @@ This now follows the REST login sequence in `C:\Nubra\Algo\RESTAPI.py`:
 4. `verifypin`
 
 The backend still returns a simplified success payload for app bootstrapping, but the actual Nubra auth calls are now used.
+
+## Data and indicators
+
+Historical data for the No Code Algo module is also fetched directly from Nubra REST APIs.
+
+Current flow:
+
+1. query Nubra historical data over REST
+2. normalize the REST response into OHLCV dataframe shape
+3. pass the dataframe into `nubra-talib`
+4. add indicator columns and evaluate the signal logic on completed candles only
+
+`nubra-sdk` is not required for the current implementation.
 
 ## Structure
 
