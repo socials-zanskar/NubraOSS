@@ -41,9 +41,23 @@ class VerifyMpinResponse(BaseModel):
     refresh_token: str
     user_name: str
     account_id: str
+    device_id: str
     environment: Environment
     broker: Literal["Nubra"]
     expires_in: int
+    message: str
+
+
+class SessionStatusRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+
+
+class SessionStatusResponse(BaseModel):
+    active: bool
+    environment: Environment
+    expires_at_utc: str | None
     message: str
 
 
@@ -182,5 +196,72 @@ class NoCodeStartResponse(BaseModel):
 
 
 class NoCodeStopResponse(BaseModel):
+    status: str
+    message: str
+
+
+class VolumeBreakoutStartRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    universe_slug: str = Field(default="volume-breakout-v1", min_length=3, max_length=128)
+    interval: Interval = "5m"
+    lookback_days: int = Field(default=10, ge=3, le=60)
+    refresh_seconds: int = Field(default=30, ge=15, le=300)
+    min_volume_ratio: float = Field(default=1.5, ge=1.0, le=20.0)
+    limit: int = Field(default=20, ge=5, le=50)
+
+
+class VolumeBreakoutStockRow(BaseModel):
+    symbol: str
+    display_name: str
+    exchange: str
+    candle_time_ist: str
+    last_price: float
+    current_volume: float
+    average_volume: float
+    volume_ratio: float
+    price_change_pct: float | None
+    price_breakout_pct: float | None
+    is_green: bool
+    is_price_breakout: bool
+    meets_breakout: bool
+
+
+class VolumeBreakoutSummary(BaseModel):
+    tracked_stocks: int
+    active_breakouts: int
+    leaders_with_price_breakout: int
+    latest_candle_ist: str | None
+    market_status: str
+
+
+class VolumeBreakoutStatusResponse(BaseModel):
+    running: bool
+    universe_slug: str
+    interval: Interval
+    lookback_days: int
+    refresh_seconds: int
+    min_volume_ratio: float
+    universe_size: int
+    live_mode: bool
+    live_status: str
+    live_last_event_ist: str | None
+    live_subscribed_symbols: int
+    last_run_ist: str | None
+    next_run_ist: str | None
+    last_error: str | None
+    summary: VolumeBreakoutSummary
+    market_breakouts: list[VolumeBreakoutStockRow]
+    recent_breakouts: list[VolumeBreakoutStockRow]
+
+
+class VolumeBreakoutStartResponse(BaseModel):
+    status: str
+    message: str
+    job: VolumeBreakoutStatusResponse
+
+
+class VolumeBreakoutStopResponse(BaseModel):
     status: str
     message: str

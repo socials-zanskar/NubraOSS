@@ -170,6 +170,52 @@ class InstrumentService:
                 break
         return deduped
 
+    def list_cash_stocks(
+        self,
+        session_token: str,
+        environment: str,
+        device_id: str,
+        exchanges: tuple[str, ...] = ("NSE", "BSE"),
+    ) -> list[dict]:
+        rows = self._get_cached_rows(session_token, environment, device_id)
+        items: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        allowed_exchanges = {exchange.upper() for exchange in exchanges}
+
+        for row in rows:
+            if not self._is_cash_stock_row(row):
+                continue
+
+            stock_name = str(row.get("stock_name") or "").strip().upper()
+            symbol = str(row.get("symbol") or "").strip().upper()
+            exchange = str(row.get("exchange") or "").strip().upper()
+            if exchange not in allowed_exchanges:
+                continue
+
+            ref_id = self._coerce_positive_int(row.get("ref_id"))
+            if ref_id is None:
+                continue
+
+            display_name = stock_name or symbol
+            key = (display_name, exchange)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                {
+                    "instrument": display_name,
+                    "display_name": display_name,
+                    "symbol": symbol or display_name,
+                    "exchange": exchange,
+                    "ref_id": ref_id,
+                    "tick_size": self._coerce_positive_int(row.get("tick_size"), 1) or 1,
+                    "lot_size": self._coerce_positive_int(row.get("lot_size"), 1) or 1,
+                }
+            )
+
+        items.sort(key=lambda item: (item["exchange"], item["display_name"]))
+        return items
+
     def resolve_stock_meta(
         self,
         session_token: str,

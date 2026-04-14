@@ -5,3 +5,4 @@ httpx==0.28.1
 pandas==2.3.2
 nubra-talib==0.1.4
 protobuf==6.33.0
+psycopg[binary]==3.2.9

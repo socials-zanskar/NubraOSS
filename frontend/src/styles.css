@@ -1060,3 +1060,145 @@ input {
   font-size: 0.66rem;
   color: #64748b;
 }
+
+.volume-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.compact-card {
+  padding: 20px;
+}
+
+.compact-card small,
+.volume-panel p,
+.table-empty,
+.table-row small,
+.summary-label,
+.text-muted {
+  color: #64748b;
+}
+
+.summary-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+.compact-card strong {
+  display: block;
+  font-size: 2rem;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.volume-meta-card {
+  align-items: flex-start;
+}
+
+.volume-meta-stack {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.volume-breakout-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 22px;
+}
+
+.volume-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-heading h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.panel-heading p {
+  margin: 0;
+  min-height: 0;
+  font-size: 0.72rem;
+}
+
+.table-shell {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.table-row {
+  display: grid;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.74rem;
+}
+
+.table-row span {
+  min-width: 0;
+}
+
+.table-row strong,
+.table-row small {
+  display: block;
+}
+
+.table-head {
+  border-top: 0;
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+}
+
+.table-empty {
+  padding: 14px;
+  font-size: 0.74rem;
+}
+
+.volume-sector-grid {
+  grid-template-columns: minmax(0, 1.4fr) 84px 90px minmax(0, 1.2fr);
+}
+
+.volume-stock-grid {
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 70px 85px 75px;
+}
+
+.volume-recent-grid {
+  grid-template-columns: 100px minmax(0, 1fr) minmax(0, 1.3fr) 70px 100px;
+}
+
+.text-success {
+  color: #166534;
+}
+
+.text-danger {
+  color: #b91c1c;
+}
+
+@media (max-width: 960px) {
+  .volume-summary-grid,
+  .volume-breakout-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .volume-meta-stack {
+    justify-items: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .volume-sector-grid,
+  .volume-stock-grid,
+  .volume-recent-grid {
+    grid-template-columns: 1fr;
+  }
+}

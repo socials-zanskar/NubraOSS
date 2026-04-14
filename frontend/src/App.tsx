@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 
 type Environment = 'PROD' | 'UAT'
 type Step = 'start' | 'otp' | 'mpin' | 'success'
-type View = 'login' | 'dashboard' | 'no-code'
+type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout'
 type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
 type Indicator = 'EMA' | 'MA' | 'RSI'
 type OrderDeliveryType = 'ORDER_DELIVERY_TYPE_CNC' | 'ORDER_DELIVERY_TYPE_IDAY'
@@ -28,9 +28,17 @@ interface SuccessResponse {
   refresh_token: string
   user_name: string
   account_id: string
+  device_id: string
   environment: Environment
   broker: 'Nubra'
   expires_in: number
+  message: string
+}
+
+interface SessionStatusResponse {
+  active: boolean
+  environment: Environment
+  expires_at_utc: string | null
   message: string
 }
 
@@ -128,7 +136,56 @@ interface PublicIpResponse {
   ip: string | null
 }
 
-const API_BASE_URL = 'http://127.0.0.1:8000'
+interface VolumeBreakoutStockRow {
+  symbol: string
+  display_name: string
+  exchange: string
+  candle_time_ist: string
+  last_price: number
+  current_volume: number
+  average_volume: number
+  volume_ratio: number
+  price_change_pct: number | null
+  price_breakout_pct: number | null
+  is_green: boolean
+  is_price_breakout: boolean
+  meets_breakout: boolean
+}
+
+interface VolumeBreakoutStatus {
+  running: boolean
+  universe_slug: string
+  interval: Interval
+  lookback_days: number
+  refresh_seconds: number
+  min_volume_ratio: number
+  universe_size: number
+  live_mode: boolean
+  live_status: string
+  live_last_event_ist: string | null
+  live_subscribed_symbols: number
+  last_run_ist: string | null
+  next_run_ist: string | null
+  last_error: string | null
+  summary: {
+    tracked_stocks: number
+    active_breakouts: number
+    leaders_with_price_breakout: number
+    latest_candle_ist: string | null
+    market_status: string
+  }
+  market_breakouts: VolumeBreakoutStockRow[]
+  recent_breakouts: VolumeBreakoutStockRow[]
+}
+
+interface VolumeBreakoutStartResponse {
+  status: string
+  message: string
+  job: VolumeBreakoutStatus
+}
+
+const API_BASE_URL = ''
+const SESSION_STORAGE_KEY = 'nubraoss.session'
 const dashboardTabs = ['Dashboard']
 
 const dashboardCards = [
@@ -141,11 +198,12 @@ const dashboardCards = [
     key: 'no-code' as const,
   },
   {
-    badge: 'TP',
+    badge: 'VB',
     badgeClass: 'badge-blue',
-    title: 'Trading Platforms',
-    description: 'Connect TradingView, GoCharting, and scanner workflows for signal routing.',
-    footer: 'Open Platforms',
+    title: 'Volume Breakout',
+    description: 'Scan sector leaders and market-wide volume breakouts across major Indian stocks.',
+    footer: 'Open Scanner',
+    key: 'volume-breakout' as const,
   },
   {
     badge: 'WS',
@@ -178,6 +236,38 @@ const dashboardCards = [
 ]
 
 const intervals: Interval[] = ['1m', '2m', '3m', '5m', '15m', '30m', '1h']
+
+function loadStoredSession(): SuccessResponse | null {
+  if (typeof window === 'undefined') return null
+  const raw = window.localStorage.getItem(SESSION_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as SuccessResponse
+  } catch {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY)
+    return null
+  }
+}
+
+function decodeJwtExpiry(token: string): number | null {
+  try {
+    const [, payload] = token.split('.')
+    if (!payload) return null
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const decoded = JSON.parse(window.atob(padded)) as { exp?: unknown }
+    return typeof decoded.exp === 'number' ? decoded.exp : null
+  } catch {
+    return null
+  }
+}
+
+function hasSessionExpired(session: SuccessResponse | null): boolean {
+  if (!session) return true
+  const exp = decodeJwtExpiry(session.access_token)
+  if (!exp) return false
+  return Date.now() >= exp * 1000
+}
 
 function extractErrorMessage(payload: ApiErrorPayload | null | undefined, fallback: string): string {
   const candidate = payload?.detail ?? payload?.message ?? payload?.error
@@ -232,9 +322,9 @@ function formatStrategySideMode(mode: StrategySideMode | null | undefined): stri
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('login')
-  const [step, setStep] = useState<Step>('start')
-  const [environment, setEnvironment] = useState<Environment>('PROD')
+  const [view, setView] = useState<View>(() => (loadStoredSession() ? 'dashboard' : 'login'))
+  const [step, setStep] = useState<Step>(() => (loadStoredSession() ? 'success' : 'start'))
+  const [environment, setEnvironment] = useState<Environment>(() => loadStoredSession()?.environment ?? 'PROD')
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
   const [mpin, setMpin] = useState('')
@@ -243,7 +333,8 @@ export default function App() {
   const [message, setMessage] = useState('Enter your phone number, verify the OTP, then confirm MPIN.')
   const [error, setError] = useState('')
   const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'mpin' | 'no-code' | 'stop' | null>(null)
-  const [session, setSession] = useState<SuccessResponse | null>(null)
+  const [session, setSession] = useState<SuccessResponse | null>(() => loadStoredSession())
+  const [isSessionChecking, setIsSessionChecking] = useState<boolean>(() => Boolean(loadStoredSession()))
   const [publicIp, setPublicIp] = useState<string>('')
 
   const [instrument, setInstrument] = useState('')
@@ -264,12 +355,17 @@ export default function App() {
   const [stockSuggestions, setStockSuggestions] = useState<StockSearchItem[]>([])
   const [noCodeMessage, setNoCodeMessage] = useState('Configure one instrument and start the IST scheduler.')
   const [noCodeError, setNoCodeError] = useState('')
+  const [volumeBreakoutStatus, setVolumeBreakoutStatus] = useState<VolumeBreakoutStatus | null>(null)
+  const [volumeBreakoutMessage, setVolumeBreakoutMessage] = useState(
+    'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
+  )
+  const [volumeBreakoutError, setVolumeBreakoutError] = useState('')
   const previousAlertCount = useRef(0)
 
   const phoneComplete = flowId.length > 0
   const otpComplete = step === 'mpin' || step === 'success'
   const mpinComplete = step === 'success'
-  const derivedDeviceId = phone ? `Nubra-OSS-${phone}` : 'Nubra-OSS-<phone>'
+  const derivedDeviceId = session?.device_id ?? (phone ? `Nubra-OSS-${phone}` : 'Nubra-OSS-<phone>')
 
   const helperText = useMemo(() => {
     if (step === 'otp') return `OTP sent to ${maskedPhone || 'your number'}.`
@@ -277,6 +373,86 @@ export default function App() {
     if (step === 'success') return 'Authentication complete.'
     return 'Enter your phone number, verify the OTP, then confirm MPIN.'
   }, [maskedPhone, step])
+
+  function resetSession(reason?: string) {
+    setSession(null)
+    setView('login')
+    setStep('start')
+    setFlowId('')
+    setOtp('')
+    setMpin('')
+    setMaskedPhone('')
+    setInstrument('')
+    setNoCodeStatus(null)
+    setInstrumentMeta(null)
+    setStockSuggestions([])
+    setVolumeBreakoutStatus(null)
+    setPublicIp('')
+    setIsSessionChecking(false)
+    setNoCodeError('')
+    setVolumeBreakoutError('')
+    setError(reason ?? '')
+    setMessage(reason ?? 'Enter your phone number, verify the OTP, then confirm MPIN.')
+    fetch(`${API_BASE_URL}/api/no-code/stop`, { method: 'POST' }).catch(() => undefined)
+    fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (session && !hasSessionExpired(session)) {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session))
+      return
+    }
+    window.localStorage.removeItem(SESSION_STORAGE_KEY)
+  }, [session])
+
+  useEffect(() => {
+    if (!session) return
+    if (hasSessionExpired(session)) {
+      resetSession('Your saved session has expired. Please log in again.')
+      return
+    }
+
+    let cancelled = false
+    const verifySession = async () => {
+      setIsSessionChecking(true)
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/auth/session-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: session.access_token,
+            device_id: session.device_id,
+            environment: session.environment,
+          }),
+        })
+        const data = (await response.json()) as SessionStatusResponse | ApiErrorPayload
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to validate your session.'))
+        }
+        if (cancelled) return
+        const result = data as SessionStatusResponse
+        if (!result.active) {
+          resetSession('Your Nubra session is no longer active. Please log in again.')
+          return
+        }
+      } catch (err) {
+        if (cancelled) return
+        resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
+        return
+      }
+      if (!cancelled) {
+        setIsSessionChecking(false)
+      }
+    }
+
+    verifySession()
+    const intervalId = window.setInterval(verifySession, 5 * 60 * 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [session])
 
   useEffect(() => {
     if (!session) {
@@ -333,6 +509,76 @@ export default function App() {
     const intervalId = window.setInterval(fetchStatus, 5000)
     return () => window.clearInterval(intervalId)
   }, [view])
+
+  useEffect(() => {
+    if (view !== 'volume-breakout' || !session) return
+
+    let cancelled = false
+    let intervalId: number | null = null
+
+    const fetchStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/volume-breakout/status`)
+        const data = (await response.json()) as VolumeBreakoutStatus | ApiErrorPayload
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to fetch Volume Breakout status.'))
+        }
+        if (cancelled) return
+        const status = data as VolumeBreakoutStatus
+        setVolumeBreakoutStatus(status)
+        setVolumeBreakoutError(status.last_error ?? '')
+      } catch (err) {
+        if (cancelled) return
+        setVolumeBreakoutError(err instanceof Error ? err.message : 'Unable to fetch Volume Breakout status.')
+      }
+    }
+
+    const startScanner = async () => {
+      setVolumeBreakoutError('')
+      setVolumeBreakoutMessage('Loading stored history and opening the live websocket overlay...')
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/volume-breakout/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: session.access_token,
+            device_id: derivedDeviceId,
+            environment: session.environment,
+            universe_slug: 'volume-breakout-v1',
+            interval: '5m',
+            lookback_days: 10,
+            refresh_seconds: 30,
+            min_volume_ratio: 1.5,
+            limit: 12,
+          }),
+        })
+        const data = (await response.json()) as VolumeBreakoutStartResponse | ApiErrorPayload
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to start Volume Breakout scanner.'))
+        }
+        if (cancelled) return
+        const result = data as VolumeBreakoutStartResponse
+        setVolumeBreakoutStatus(result.job)
+        setVolumeBreakoutMessage(result.message)
+        setVolumeBreakoutError(result.job.last_error ?? '')
+        intervalId = window.setInterval(fetchStatus, 5000)
+      } catch (err) {
+        if (cancelled) return
+        setVolumeBreakoutError(err instanceof Error ? err.message : 'Unable to start Volume Breakout scanner.')
+      }
+    }
+
+    startScanner()
+
+    return () => {
+      cancelled = true
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+      setVolumeBreakoutStatus(null)
+      fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
+    }
+  }, [view, session, derivedDeviceId])
 
   useEffect(() => {
     const lotSize = noCodeStatus?.execution?.instrument_lot_size
@@ -495,6 +741,7 @@ export default function App() {
 
       const result = data as SuccessResponse
       setSession(result)
+      setIsSessionChecking(false)
       setMessage(result.message)
       setStep('success')
       setView('dashboard')
@@ -597,6 +844,19 @@ export default function App() {
     }
   }
 
+  function formatPercent(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) return '-'
+    return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+  }
+
+  function formatCompactNumber(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) return '-'
+    if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
+    if (value >= 1_00_000) return `${(value / 1_00_000).toFixed(2)}L`
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+    return value.toFixed(0)
+  }
+
   function renderDashboardNav(activeTab: string) {
     return (
       <section className="dashboard-topbar">
@@ -625,6 +885,9 @@ export default function App() {
             <span className="pill pill-dark">
               {session?.environment === 'UAT' ? 'UAT' : 'PROD'}
             </span>
+            <button type="button" className="secondary-button" onClick={() => resetSession()}>
+              Log out
+            </button>
           </div>
         </header>
 
@@ -860,6 +1123,149 @@ export default function App() {
     )
   }
 
+  if (view === 'volume-breakout') {
+    return (
+      <main className="dashboard-shell">
+        <section className="dashboard-panel">
+          {renderDashboardNav('Scanner')}
+
+          <section className="dashboard-header no-code-header">
+            <div>
+              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
+                {'< Back to Dashboard'}
+              </button>
+              <h1>Volume Breakout</h1>
+              <p>DB-backed stock breakout board built from stored 1-minute history for the tracked universe.</p>
+            </div>
+            <div className="header-actions">
+              <span className="pill">
+                {volumeBreakoutStatus?.interval ?? '5m'} / {volumeBreakoutStatus?.refresh_seconds ?? 30}s
+              </span>
+              <span className="pill">
+                Live: {volumeBreakoutStatus?.live_status ?? 'idle'}
+              </span>
+            </div>
+          </section>
+
+          <section className="volume-summary-grid">
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Universe</span>
+              <strong>{volumeBreakoutStatus?.summary.tracked_stocks ?? 0}</strong>
+              <small>Tracked stocks loaded from Supabase.</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Active Breakouts</span>
+              <strong>{volumeBreakoutStatus?.summary.active_breakouts ?? 0}</strong>
+              <small>Stocks above the current volume-ratio threshold.</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Latest Candle</span>
+              <strong>{volumeBreakoutStatus?.summary.latest_candle_ist ? 'Ready' : 'Pending'}</strong>
+              <small>{volumeBreakoutStatus?.summary.latest_candle_ist ?? 'Waiting for stored bars.'}</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Price Confirmation</span>
+              <strong>{volumeBreakoutStatus?.summary.leaders_with_price_breakout ?? 0}</strong>
+              <small>Breakouts also trading above prior lookback highs.</small>
+            </article>
+          </section>
+
+          <section className="dashboard-info-card volume-meta-card">
+            <div>
+              <strong>Scanner Mode</strong>
+              <p>{volumeBreakoutMessage}</p>
+            </div>
+            <div className="volume-meta-stack">
+              <span className="pill">
+                WS symbols: {volumeBreakoutStatus?.live_subscribed_symbols ?? 0}
+              </span>
+              <span className="pill">
+                Last live event: {volumeBreakoutStatus?.live_last_event_ist ?? 'Waiting...'}
+              </span>
+              <span className="pill">Last run: {volumeBreakoutStatus?.last_run_ist ?? 'Waiting...'}</span>
+              <span className="pill">Next run: {volumeBreakoutStatus?.next_run_ist ?? 'Waiting...'}</span>
+            </div>
+          </section>
+
+          <section className="volume-breakout-grid">
+            <article className="dashboard-module-card volume-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Market Rankers</h2>
+                  <p>Highest volume-ratio names computed from stored 1-minute history.</p>
+                </div>
+              </div>
+              <div className="table-shell">
+                <div className="table-row table-head volume-stock-grid">
+                  <span>Stock</span>
+                  <span>Exchange</span>
+                  <span>Ratio</span>
+                  <span>Volume</span>
+                  <span>Price</span>
+                </div>
+                {(volumeBreakoutStatus?.market_breakouts ?? []).length === 0 ? (
+                  <div className="table-empty">No market-wide leaders available yet.</div>
+                ) : (
+                  (volumeBreakoutStatus?.market_breakouts ?? []).map((row) => (
+                    <div key={`${row.symbol}-${row.candle_time_ist}`} className="table-row volume-stock-grid">
+                      <span>
+                        <strong>{row.symbol}</strong>
+                        <small>{row.display_name}</small>
+                      </span>
+                      <span>{row.exchange}</span>
+                      <span className={row.meets_breakout ? 'text-success' : 'text-muted'}>
+                        {row.volume_ratio.toFixed(2)}x
+                      </span>
+                      <span>{formatCompactNumber(row.current_volume)}</span>
+                      <span className={row.is_green ? 'text-success' : 'text-danger'}>
+                        {row.last_price.toFixed(2)}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </article>
+          </section>
+
+          <article className="dashboard-module-card volume-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Fresh Entrants</h2>
+                <p>New names that entered the breakout list on the latest completed candle.</p>
+              </div>
+            </div>
+            <div className="table-shell">
+              <div className="table-row table-head volume-recent-grid">
+                <span>Stock</span>
+                <span>Exchange</span>
+                <span>Time</span>
+                <span>Ratio</span>
+                <span>Price Breakout</span>
+              </div>
+              {(volumeBreakoutStatus?.recent_breakouts ?? []).length === 0 ? (
+                <div className="table-empty">No fresh entrants yet. The next completed run will populate this feed.</div>
+              ) : (
+                (volumeBreakoutStatus?.recent_breakouts ?? []).map((row) => (
+                  <div key={`recent-${row.symbol}-${row.candle_time_ist}`} className="table-row volume-recent-grid">
+                    <span>{row.symbol}</span>
+                    <span>{row.exchange}</span>
+                    <span>{row.candle_time_ist}</span>
+                    <span>{row.volume_ratio.toFixed(2)}x</span>
+                    <span className={row.is_price_breakout ? 'text-success' : 'text-muted'}>
+                      {row.is_price_breakout ? formatPercent(row.price_breakout_pct) : 'Not yet'}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </article>
+
+          {volumeBreakoutError ? <section className="error-banner dashboard-error">{volumeBreakoutError}</section> : null}
+        </section>
+      </main>
+    )
+  }
+
   if (view === 'dashboard') {
     return (
       <main className="dashboard-shell">
@@ -872,6 +1278,7 @@ export default function App() {
               <p>
                 Logged in as {session?.user_name ?? 'Nubra User'} on {session?.environment ?? 'PROD'}.
               </p>
+              {isSessionChecking ? <p>Checking session status...</p> : null}
             </div>
           </section>
 
@@ -879,15 +1286,15 @@ export default function App() {
             {dashboardCards.map((card) => (
               <article
                 key={card.title}
-                className={card.key === 'no-code' ? 'dashboard-module-card is-clickable' : 'dashboard-module-card'}
-                onClick={card.key === 'no-code' ? () => setView('no-code') : undefined}
-                role={card.key === 'no-code' ? 'button' : undefined}
-                tabIndex={card.key === 'no-code' ? 0 : undefined}
+                className={card.key ? 'dashboard-module-card is-clickable' : 'dashboard-module-card'}
+                onClick={card.key ? () => setView(card.key) : undefined}
+                role={card.key ? 'button' : undefined}
+                tabIndex={card.key ? 0 : undefined}
                 onKeyDown={
-                  card.key === 'no-code'
+                  card.key
                     ? (event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
-                          setView('no-code')
+                          setView(card.key)
                         }
                       }
                     : undefined

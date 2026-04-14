@@ -10,10 +10,16 @@ from app.schemas import (
     NoCodeStartResponse,
     NoCodeStatusResponse,
     NoCodeStopResponse,
+    SessionStatusRequest,
+    SessionStatusResponse,
     StartLoginRequest,
     StartLoginResponse,
     StockSearchRequest,
     StockSearchResponse,
+    VolumeBreakoutStartRequest,
+    VolumeBreakoutStartResponse,
+    VolumeBreakoutStatusResponse,
+    VolumeBreakoutStopResponse,
     VerifyMpinRequest,
     VerifyMpinResponse,
     VerifyOtpRequest,
@@ -22,6 +28,7 @@ from app.schemas import (
 from app.services.auth_service import auth_service
 from app.services.instrument_service import instrument_service
 from app.services.no_code_service import no_code_service
+from app.services.volume_breakout_service import volume_breakout_service
 
 app = FastAPI(title=settings.app_name)
 
@@ -75,6 +82,11 @@ def verify_mpin(payload: VerifyMpinRequest) -> VerifyMpinResponse:
     return auth_service.verify_mpin(payload)
 
 
+@app.post("/api/auth/session-status", response_model=SessionStatusResponse)
+def get_session_status(payload: SessionStatusRequest) -> SessionStatusResponse:
+    return auth_service.session_status(payload)
+
+
 @app.post("/api/no-code/start", response_model=NoCodeStartResponse)
 def start_no_code(payload: NoCodeStartRequest) -> NoCodeStartResponse:
     job = no_code_service.start(payload)
@@ -110,3 +122,23 @@ def get_no_code_status() -> NoCodeStatusResponse:
 def stop_no_code() -> NoCodeStopResponse:
     no_code_service.stop()
     return NoCodeStopResponse(status="success", message="No Code Algo stopped.")
+
+
+@app.post("/api/volume-breakout/start", response_model=VolumeBreakoutStartResponse)
+def start_volume_breakout(payload: VolumeBreakoutStartRequest) -> VolumeBreakoutStartResponse:
+    job = volume_breakout_service.start(payload)
+    message = "Volume Breakout scanner started."
+    if job.last_error:
+        message = f"Volume Breakout scanner started with warning: {job.last_error}"
+    return VolumeBreakoutStartResponse(status="success", message=message, job=job)
+
+
+@app.get("/api/volume-breakout/status", response_model=VolumeBreakoutStatusResponse)
+def get_volume_breakout_status() -> VolumeBreakoutStatusResponse:
+    return volume_breakout_service.status()
+
+
+@app.post("/api/volume-breakout/stop", response_model=VolumeBreakoutStopResponse)
+def stop_volume_breakout() -> VolumeBreakoutStopResponse:
+    volume_breakout_service.stop()
+    return VolumeBreakoutStopResponse(status="success", message="Volume Breakout scanner stopped.")

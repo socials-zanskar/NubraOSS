@@ -1,3 +1,6 @@
+import base64
+import json
+from datetime import UTC, datetime
 from secrets import token_urlsafe
 
 import httpx
@@ -5,6 +8,8 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.schemas import (
+    SessionStatusRequest,
+    SessionStatusResponse,
     StartLoginRequest,
     StartLoginResponse,
     VerifyMpinRequest,
@@ -36,51 +41,44 @@ class AuthService:
             or f"Nubra request failed with status {response.status_code}."
         )
 
+    def _decode_expiry(self, session_token: str) -> str | None:
+        try:
+            parts = session_token.split(".")
+            if len(parts) < 2:
+                return None
+            payload = parts[1]
+            padding = "=" * (-len(payload) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(payload + padding).decode("utf-8"))
+            exp = decoded.get("exp")
+            if exp is None:
+                return None
+            return datetime.fromtimestamp(int(exp), tz=UTC).isoformat()
+        except Exception:
+            return None
+
     def start_login(self, payload: StartLoginRequest) -> StartLoginResponse:
         base_url = self._get_base_url(payload.environment)
         device_id = f"Nubra-OSS-{payload.phone}"
 
         try:
             with httpx.Client(timeout=20.0) as client:
-                first_response = client.post(
+                response = client.post(
                     f"{base_url}/sendphoneotp",
                     json={"phone": payload.phone, "skip_totp": False},
                     headers={"Content-Type": "application/json"},
                 )
-                if first_response.status_code >= 400:
+                if response.status_code >= 400:
                     raise HTTPException(
-                        status_code=first_response.status_code,
-                        detail=self._extract_error(first_response),
+                        status_code=response.status_code,
+                        detail=self._extract_error(response),
                     )
 
-                first_payload = first_response.json()
-                temp_token = first_payload.get("temp_token")
+                response_payload = response.json()
+                temp_token = response_payload.get("temp_token")
                 if not temp_token:
                     raise HTTPException(
                         status_code=502,
-                        detail="Nubra did not return temp_token in the initial OTP step.",
-                    )
-
-                second_response = client.post(
-                    f"{base_url}/sendphoneotp",
-                    json={"phone": payload.phone, "skip_totp": True},
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-temp-token": temp_token,
-                    },
-                )
-                if second_response.status_code >= 400:
-                    raise HTTPException(
-                        status_code=second_response.status_code,
-                        detail=self._extract_error(second_response),
-                    )
-
-                second_payload = second_response.json()
-                temp_token = second_payload.get("temp_token")
-                if not temp_token:
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Nubra did not return temp_token in the second OTP step.",
+                        detail="Nubra did not return temp_token in the OTP step.",
                     )
         except httpx.RequestError as exc:
             raise HTTPException(
@@ -209,10 +207,51 @@ class AuthService:
             refresh_token=token_urlsafe(24),
             user_name="Nubra User",
             account_id=f"NUBRA-{account_suffix}",
+            device_id=device_id,
             environment=environment,
             broker="Nubra",
             expires_in=3600,
             message="Nubra session established using the REST API login flow.",
+        )
+
+    def session_status(self, payload: SessionStatusRequest) -> SessionStatusResponse:
+        base_url = self._get_base_url(payload.environment)
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(
+                    f"{base_url}/userinfo",
+                    headers={
+                        "Authorization": f"Bearer {payload.session_token}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "x-device-id": payload.device_id,
+                    },
+                )
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Unable to reach Nubra auth service: {exc}",
+            ) from exc
+
+        if response.status_code in (401, 403, 440):
+            return SessionStatusResponse(
+                active=False,
+                environment=payload.environment,
+                expires_at_utc=self._decode_expiry(payload.session_token),
+                message=self._extract_error(response),
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=self._extract_error(response),
+            )
+
+        return SessionStatusResponse(
+            active=True,
+            environment=payload.environment,
+            expires_at_utc=self._decode_expiry(payload.session_token),
+            message="Session is active.",
         )
 
 
