@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from typing import Any
+
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -16,6 +18,14 @@ from app.schemas import (
     StartLoginResponse,
     StockSearchRequest,
     StockSearchResponse,
+    TradingViewWebhookConfigureRequest,
+    TradingViewWebhookConfigureResponse,
+    TradingViewWebhookExecutionModeRequest,
+    TradingViewWebhookExecutionModeResponse,
+    TradingViewWebhookExecuteResponse,
+    TradingViewWebhookResetResponse,
+    TradingViewWebhookStatusResponse,
+    TunnelStatusResponse,
     VolumeBreakoutStartRequest,
     VolumeBreakoutStartResponse,
     VolumeBreakoutStatusResponse,
@@ -28,6 +38,8 @@ from app.schemas import (
 from app.services.auth_service import auth_service
 from app.services.instrument_service import instrument_service
 from app.services.no_code_service import no_code_service
+from app.services.tradingview_webhook_service import tradingview_webhook_service
+from app.services.tunnel_service import tunnel_service
 from app.services.volume_breakout_service import volume_breakout_service
 
 app = FastAPI(title=settings.app_name)
@@ -65,6 +77,65 @@ def get_public_ip() -> dict[str, str | None]:
         except Exception:
             continue
     return {"ip": None}
+
+
+@app.get("/api/system/tunnel/status", response_model=TunnelStatusResponse)
+def get_tunnel_status() -> TunnelStatusResponse:
+    return tunnel_service.status()
+
+
+@app.post("/api/system/tunnel/start", response_model=TunnelStatusResponse)
+def start_tunnel() -> TunnelStatusResponse:
+    return tunnel_service.start()
+
+
+@app.post("/api/system/tunnel/stop", response_model=TunnelStatusResponse)
+def stop_tunnel() -> TunnelStatusResponse:
+    return tunnel_service.stop()
+
+
+@app.get("/api/webhooks/tradingview/status", response_model=TradingViewWebhookStatusResponse)
+def get_tradingview_webhook_status() -> TradingViewWebhookStatusResponse:
+    return tradingview_webhook_service.status()
+
+
+@app.post("/api/webhooks/tradingview/configure", response_model=TradingViewWebhookConfigureResponse)
+def configure_tradingview_webhook(payload: TradingViewWebhookConfigureRequest) -> TradingViewWebhookConfigureResponse:
+    config = tradingview_webhook_service.configure(payload)
+    return TradingViewWebhookConfigureResponse(
+        status="success",
+        message="TradingView webhook configured successfully.",
+        config=config,
+    )
+
+
+@app.post("/api/webhooks/tradingview/reset", response_model=TradingViewWebhookResetResponse)
+def reset_tradingview_webhook() -> TradingViewWebhookResetResponse:
+    tradingview_webhook_service.reset()
+    return TradingViewWebhookResetResponse(
+        status="success",
+        message="TradingView webhook configuration cleared.",
+    )
+
+
+@app.post("/api/webhooks/tradingview/execution-mode", response_model=TradingViewWebhookExecutionModeResponse)
+def set_tradingview_execution_mode(payload: TradingViewWebhookExecutionModeRequest) -> TradingViewWebhookExecutionModeResponse:
+    status = tradingview_webhook_service.set_execution_enabled(payload.execution_enabled)
+    return TradingViewWebhookExecutionModeResponse(
+        status="success",
+        message="Webhook execution mode updated.",
+        execution_enabled=status.execution_enabled,
+    )
+
+
+@app.post("/api/webhooks/tradingview", response_model=TradingViewWebhookExecuteResponse)
+def execute_tradingview_webhook(
+    payload: dict[str, Any],
+    x_webhook_secret: str | None = Header(default=None),
+    x_webhook_source: str | None = Header(default=None),
+) -> TradingViewWebhookExecuteResponse:
+    source = "test" if isinstance(x_webhook_source, str) and x_webhook_source.strip().lower() == "test" else "live"
+    return tradingview_webhook_service.execute(payload, header_secret=x_webhook_secret, source=source)
 
 
 @app.post("/api/auth/start", response_model=StartLoginResponse)

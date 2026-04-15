@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     nubra_prod_base_url: str = "https://api.nubra.io"
     nubra_uat_base_url: str = "https://uatapi.nubra.io"
+    cloudflared_path: str = "cloudflared"
+    cloudflare_tunnel_target_url: str = "http://127.0.0.1:8000"
     supabase_db_url: str = ""
     supabase_db_host: str = ""
     supabase_db_port: int = 5432

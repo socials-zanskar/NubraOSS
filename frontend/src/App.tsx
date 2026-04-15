@@ -1,8 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import nubraLogo from './assets/nubra-logo.png'
 
 type Environment = 'PROD' | 'UAT'
 type Step = 'start' | 'otp' | 'mpin' | 'success'
-type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout'
+type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout' | 'tradingview-webhook'
+type TradingViewMode = 'strategy' | 'line'
+type TradingViewAction = 'BUY' | 'SELL'
 type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
 type Indicator = 'EMA' | 'MA' | 'RSI'
 type OrderDeliveryType = 'ORDER_DELIVERY_TYPE_CNC' | 'ORDER_DELIVERY_TYPE_IDAY'
@@ -33,6 +36,7 @@ interface SuccessResponse {
   broker: 'Nubra'
   expires_in: number
   message: string
+  is_demo?: boolean
 }
 
 interface SessionStatusResponse {
@@ -136,6 +140,142 @@ interface PublicIpResponse {
   ip: string | null
 }
 
+interface TunnelStatusResponse {
+  running: boolean
+  public_url: string | null
+  target_url: string
+  last_error: string | null
+  logs: string[]
+}
+
+interface TradingViewWebhookLogEntry {
+  time_ist: string
+  level: 'info' | 'success' | 'error'
+  message: string
+  payload: Record<string, unknown> | null
+}
+
+interface TradingViewWebhookHistoryEntry {
+  id: string
+  time_ist: string
+  day_ist: string
+  source: 'test' | 'live'
+  status: 'received' | 'accepted' | 'blocked' | 'error'
+  strategy: string | null
+  tag: string | null
+  instrument: string | null
+  exchange: string | null
+  action: string | null
+  quantity: number | null
+  order_id: number | null
+  order_status: string | null
+  pnl: number | null
+  requested_qty: number | null
+  placed_qty: number | null
+  filled_qty: number | null
+  avg_filled_price: number | null
+  order_price: number | null
+  ltp_price: number | null
+  ref_id: number | null
+  lot_size: number | null
+  tick_size: number | null
+  message: string
+  payload: Record<string, unknown> | null
+}
+
+interface TradingViewWebhookSummary {
+  total_events: number
+  live_events: number
+  test_events: number
+  blocked_events: number
+  error_events: number
+  accepted_events: number
+  today_pnl: number
+  today_orders: number
+}
+
+interface TradingViewWebhookOrderRow {
+  time_ist: string
+  source: 'test' | 'live'
+  strategy: string | null
+  tag: string | null
+  instrument: string | null
+  exchange: string | null
+  action: string | null
+  requested_qty: number | null
+  placed_qty: number | null
+  filled_qty: number | null
+  order_price: number | null
+  avg_filled_price: number | null
+  current_price: number | null
+  order_id: number | null
+  order_status: string | null
+  pnl: number | null
+}
+
+interface TradingViewWebhookPositionRow {
+  strategy: string | null
+  tag: string | null
+  instrument: string
+  exchange: string
+  net_qty: number
+  avg_entry_price: number | null
+  current_price: number | null
+  realized_pnl: number
+  unrealized_pnl: number
+  total_pnl: number
+  direction: 'LONG' | 'SHORT' | 'FLAT'
+}
+
+interface TradingViewWebhookPnlSummary {
+  realized_pnl: number
+  unrealized_pnl: number
+  total_pnl: number
+  open_positions: number
+  closed_groups: number
+}
+
+interface TradingViewWebhookStatusResponse {
+  configured: boolean
+  environment: Environment | null
+  broker: 'Nubra' | null
+  user_name: string | null
+  account_id: string | null
+  configured_at_utc: string | null
+  order_delivery_type: OrderDeliveryType | null
+  secret: string | null
+  has_secret: boolean
+  webhook_path: string
+  webhook_url: string | null
+  strategy_template: Record<string, unknown>
+  line_alert_template: Record<string, unknown>
+  execution_enabled: boolean
+  last_error: string | null
+  logs: TradingViewWebhookLogEntry[]
+  history: TradingViewWebhookHistoryEntry[]
+  summary: TradingViewWebhookSummary
+  order_history: TradingViewWebhookOrderRow[]
+  positions: TradingViewWebhookPositionRow[]
+  pnl_summary: TradingViewWebhookPnlSummary
+}
+
+interface TradingViewWebhookConfigureResponse {
+  status: 'success'
+  message: string
+  config: TradingViewWebhookStatusResponse
+}
+
+interface TradingViewWebhookResetResponse {
+  status: 'success'
+  message: string
+}
+
+interface TradingViewWebhookExecutionModeResponse {
+  status: 'success'
+  message: string
+  execution_enabled: boolean
+}
+
 interface VolumeBreakoutStockRow {
   symbol: string
   display_name: string
@@ -211,6 +351,7 @@ const dashboardCards = [
     title: 'Webhook Strategies',
     description: 'Manage alert-driven trading strategies and view active automation status.',
     footer: 'Open Strategies',
+    key: 'tradingview-webhook' as const,
   },
   {
     badge: 'TB',
@@ -234,6 +375,19 @@ const dashboardCards = [
     footer: 'Open Tools',
   },
 ]
+
+const demoSession: SuccessResponse = {
+  access_token: 'demo-access-token',
+  refresh_token: 'demo-refresh-token',
+  user_name: 'Demo User',
+  account_id: 'NUBRA-DEMO',
+  device_id: 'Nubra-OSS-DEMO',
+  environment: 'UAT',
+  broker: 'Nubra',
+  expires_in: 3600,
+  message: 'Demo mode enabled. Explore the current UI without using a real Nubra login.',
+  is_demo: true,
+}
 
 const intervals: Interval[] = ['1m', '2m', '3m', '5m', '15m', '30m', '1h']
 
@@ -336,6 +490,7 @@ export default function App() {
   const [session, setSession] = useState<SuccessResponse | null>(() => loadStoredSession())
   const [isSessionChecking, setIsSessionChecking] = useState<boolean>(() => Boolean(loadStoredSession()))
   const [publicIp, setPublicIp] = useState<string>('')
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
 
   const [instrument, setInstrument] = useState('')
   const [interval, setIntervalValue] = useState<Interval>('3m')
@@ -360,6 +515,24 @@ export default function App() {
     'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
   )
   const [volumeBreakoutError, setVolumeBreakoutError] = useState('')
+  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatusResponse | null>(null)
+  const [tunnelAction, setTunnelAction] = useState<'start' | 'stop' | 'refresh' | null>(null)
+  const [tradingViewStatus, setTradingViewStatus] = useState<TradingViewWebhookStatusResponse | null>(null)
+  const [tradingViewActionState, setTradingViewActionState] = useState<
+    'configure' | 'reset' | 'copy-url' | 'copy-strategy' | 'copy-line' | 'test'
+  | null>(null)
+  const [tradingViewMessage, setTradingViewMessage] = useState('Configure the webhook once, then paste the generated JSON into TradingView alerts.')
+  const [tradingViewError, setTradingViewError] = useState('')
+  const [tradingViewSecret, setTradingViewSecret] = useState('')
+  const [tradingViewProduct, setTradingViewProduct] = useState<OrderDeliveryType>('ORDER_DELIVERY_TYPE_IDAY')
+  const [tradingViewMode, setTradingViewMode] = useState<TradingViewMode>('line')
+  const [tradingViewStrategyName, setTradingViewStrategyName] = useState('TradingView Strategy')
+  const [tradingViewTag, setTradingViewTag] = useState('')
+  const [tradingViewSymbol, setTradingViewSymbol] = useState('RELIANCE')
+  const [tradingViewExchange, setTradingViewExchange] = useState('NSE')
+  const [tradingViewOrderAction, setTradingViewOrderAction] = useState<TradingViewAction>('BUY')
+  const [tradingViewQuantity, setTradingViewQuantity] = useState('1')
+  const [historySourceFilter, setHistorySourceFilter] = useState<'all' | 'test' | 'live'>('all')
   const previousAlertCount = useRef(0)
 
   const phoneComplete = flowId.length > 0
@@ -388,9 +561,14 @@ export default function App() {
     setStockSuggestions([])
     setVolumeBreakoutStatus(null)
     setPublicIp('')
+    setProfileMenuOpen(false)
     setIsSessionChecking(false)
     setNoCodeError('')
     setVolumeBreakoutError('')
+    setTradingViewStatus(null)
+    setTradingViewError('')
+    setTradingViewSecret('')
+    setTradingViewMessage('Configure the webhook once, then paste the generated JSON into TradingView alerts.')
     setError(reason ?? '')
     setMessage(reason ?? 'Enter your phone number, verify the OTP, then confirm MPIN.')
     fetch(`${API_BASE_URL}/api/no-code/stop`, { method: 'POST' }).catch(() => undefined)
@@ -408,6 +586,10 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return
+    if (session.is_demo) {
+      setIsSessionChecking(false)
+      return
+    }
     if (hasSessionExpired(session)) {
       resetSession('Your saved session has expired. Please log in again.')
       return
@@ -457,6 +639,18 @@ export default function App() {
   useEffect(() => {
     if (!session) {
       setPublicIp('')
+      setTunnelStatus(null)
+      return
+    }
+    if (session.is_demo) {
+      setPublicIp('Demo mode')
+      setTunnelStatus({
+        running: false,
+        public_url: null,
+        target_url: 'http://127.0.0.1:8000',
+        last_error: null,
+        logs: ['Demo mode active. Start a real session to generate a public webhook URL.'],
+      })
       return
     }
 
@@ -474,6 +668,127 @@ export default function App() {
     }
 
     fetchPublicIp()
+  }, [session])
+
+  useEffect(() => {
+    if (!session || session.is_demo) return
+
+    let cancelled = false
+
+    const fetchTunnelStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/system/tunnel/status`)
+        const data = (await response.json()) as TunnelStatusResponse | ApiErrorPayload
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to fetch tunnel status.'))
+        }
+        if (!cancelled) {
+          setTunnelStatus(data as TunnelStatusResponse)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTunnelStatus({
+            running: false,
+            public_url: null,
+            target_url: 'http://127.0.0.1:8000',
+            last_error: err instanceof Error ? err.message : 'Unable to fetch tunnel status.',
+            logs: [],
+          })
+        }
+      }
+    }
+
+    fetchTunnelStatus()
+    const intervalId = window.setInterval(fetchTunnelStatus, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [session])
+
+  useEffect(() => {
+    if (!session) {
+      setTradingViewStatus(null)
+      return
+    }
+    if (session.is_demo) {
+      setTradingViewStatus({
+        configured: false,
+        environment: session.environment,
+        broker: session.broker,
+        user_name: session.user_name,
+        account_id: session.account_id,
+        configured_at_utc: null,
+        order_delivery_type: tradingViewProduct,
+        secret: null,
+        has_secret: false,
+        webhook_path: '/api/webhooks/tradingview',
+        webhook_url: null,
+        strategy_template: {},
+        line_alert_template: {},
+        execution_enabled: false,
+        last_error: null,
+        logs: [
+          {
+            time_ist: new Date().toLocaleString(),
+            level: 'info',
+            message: 'Demo mode active. Use a real session to configure TradingView webhooks.',
+            payload: null,
+          },
+        ],
+        history: [],
+        summary: {
+          total_events: 0,
+          live_events: 0,
+          test_events: 0,
+          blocked_events: 0,
+          error_events: 0,
+          accepted_events: 0,
+          today_pnl: 0,
+          today_orders: 0,
+        },
+        order_history: [],
+        positions: [],
+        pnl_summary: {
+          realized_pnl: 0,
+          unrealized_pnl: 0,
+          total_pnl: 0,
+          open_positions: 0,
+          closed_groups: 0,
+        },
+      })
+      return
+    }
+
+    let cancelled = false
+
+    const fetchTradingViewStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
+        const data = (await response.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to fetch TradingView webhook status.'))
+        }
+        if (!cancelled) {
+          const status = data as TradingViewWebhookStatusResponse
+          setTradingViewStatus(status)
+          if (status.secret) setTradingViewSecret(status.secret)
+          if (status.order_delivery_type) setTradingViewProduct(status.order_delivery_type)
+          setTradingViewError(status.last_error ?? '')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTradingViewError(err instanceof Error ? err.message : 'Unable to fetch TradingView webhook status.')
+        }
+      }
+    }
+
+    fetchTradingViewStatus()
+    const intervalId = window.setInterval(fetchTradingViewStatus, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
   }, [session])
 
   useEffect(() => {
@@ -752,6 +1067,33 @@ export default function App() {
     }
   }
 
+  function handleDemoLogin() {
+    setSession(demoSession)
+    setEnvironment(demoSession.environment)
+    setView('dashboard')
+    setStep('success')
+    setFlowId('')
+    setMaskedPhone('')
+    setPhone('')
+    setOtp('')
+    setMpin('')
+    setError('')
+    setProfileMenuOpen(false)
+    setMessage(demoSession.message)
+    setNoCodeMessage('Configure one instrument and start the IST scheduler.')
+    setVolumeBreakoutMessage(
+      'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
+    )
+  }
+
+  function handleDashboardCardOpen(nextView: Extract<View, 'no-code' | 'volume-breakout' | 'tradingview-webhook'>) {
+    if (session?.is_demo && nextView !== 'tradingview-webhook') {
+      setMessage('Demo mode is only for reviewing the UI shell. Use a real login to run tools.')
+      return
+    }
+    setView(nextView)
+  }
+
   async function handleNoCodeStart(event: FormEvent) {
     event.preventDefault()
     if (!session) return
@@ -844,6 +1186,169 @@ export default function App() {
     }
   }
 
+  async function handleTunnelAction(action: 'start' | 'stop' | 'refresh') {
+    if (!session || session.is_demo) return
+    setTunnelAction(action)
+    try {
+      const endpoint =
+        action === 'start'
+          ? '/api/system/tunnel/start'
+          : action === 'stop'
+            ? '/api/system/tunnel/stop'
+            : '/api/system/tunnel/status'
+      const method = action === 'refresh' ? 'GET' : 'POST'
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, { method })
+      const data = (await response.json()) as TunnelStatusResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to manage Cloudflare tunnel.'))
+      }
+      setTunnelStatus(data as TunnelStatusResponse)
+    } catch (err) {
+      setTunnelStatus((current) => ({
+        running: current?.running ?? false,
+        public_url: current?.public_url ?? null,
+        target_url: current?.target_url ?? 'http://127.0.0.1:8000',
+        last_error: err instanceof Error ? err.message : 'Unable to manage Cloudflare tunnel.',
+        logs: current?.logs ?? [],
+      }))
+    } finally {
+      setTunnelAction(null)
+    }
+  }
+
+  async function handleTradingViewConfigure() {
+    if (!session || session.is_demo) return
+    setTradingViewError('')
+    setTradingViewActionState('configure')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/configure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: session.access_token,
+          device_id: derivedDeviceId,
+          environment: session.environment,
+          user_name: session.user_name,
+          account_id: session.account_id,
+          secret: tradingViewSecret.trim() || undefined,
+          order_delivery_type: tradingViewProduct,
+        }),
+      })
+      const data = (await response.json()) as TradingViewWebhookConfigureResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to configure TradingView webhook.'))
+      }
+      const result = data as TradingViewWebhookConfigureResponse
+      setTradingViewStatus(result.config)
+      setTradingViewSecret(result.config.secret ?? '')
+      setTradingViewProduct(result.config.order_delivery_type ?? tradingViewProduct)
+      setTradingViewMessage(result.message)
+    } catch (err) {
+      setTradingViewError(err instanceof Error ? err.message : 'Unable to configure TradingView webhook.')
+    } finally {
+      setTradingViewActionState(null)
+    }
+  }
+
+  async function handleTradingViewReset() {
+    setTradingViewError('')
+    setTradingViewActionState('reset')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/reset`, {
+        method: 'POST',
+      })
+      const data = (await response.json()) as TradingViewWebhookResetResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to reset TradingView webhook.'))
+      }
+      const result = data as TradingViewWebhookResetResponse
+      setTradingViewStatus({
+        configured: false,
+        environment: session?.environment ?? null,
+        broker: session?.broker ?? null,
+        user_name: session?.user_name ?? null,
+        account_id: session?.account_id ?? null,
+        configured_at_utc: null,
+        order_delivery_type: tradingViewProduct,
+        secret: null,
+        has_secret: false,
+        webhook_path: '/api/webhooks/tradingview',
+        webhook_url: tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : null,
+        strategy_template: {},
+        line_alert_template: {},
+        execution_enabled: true,
+        last_error: null,
+        logs: [],
+        history: [],
+        summary: {
+          total_events: 0,
+          live_events: 0,
+          test_events: 0,
+          blocked_events: 0,
+          error_events: 0,
+          accepted_events: 0,
+          today_pnl: 0,
+          today_orders: 0,
+        },
+        order_history: [],
+        positions: [],
+        pnl_summary: {
+          realized_pnl: 0,
+          unrealized_pnl: 0,
+          total_pnl: 0,
+          open_positions: 0,
+          closed_groups: 0,
+        },
+      })
+      setTradingViewSecret('')
+      setTradingViewMessage(result.message)
+    } catch (err) {
+      setTradingViewError(err instanceof Error ? err.message : 'Unable to reset TradingView webhook.')
+    } finally {
+      setTradingViewActionState(null)
+    }
+  }
+
+  async function handleTradingViewKillSwitch(enabled: boolean) {
+    setTradingViewError('')
+    setTradingViewActionState(enabled ? 'configure' : 'reset')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/execution-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ execution_enabled: enabled }),
+      })
+      const data = (await response.json()) as TradingViewWebhookExecutionModeResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to update webhook execution mode.'))
+      }
+      setTradingViewStatus((current) => (current ? { ...current, execution_enabled: enabled } : current))
+      setTradingViewMessage(enabled ? 'Webhook execution enabled.' : 'Kill switch enabled. Incoming webhook orders will be blocked.')
+    } catch (err) {
+      setTradingViewError(err instanceof Error ? err.message : 'Unable to update webhook execution mode.')
+    } finally {
+      setTradingViewActionState(null)
+    }
+  }
+
+  async function copyToClipboard(value: string, kind: 'copy-url' | 'copy-strategy' | 'copy-line') {
+    setTradingViewActionState(kind)
+    try {
+      await navigator.clipboard.writeText(value)
+      setTradingViewMessage(
+        kind === 'copy-url'
+          ? 'Webhook URL copied.'
+          : kind === 'copy-strategy'
+            ? 'Strategy JSON copied.'
+            : 'Line alert JSON copied.',
+      )
+    } catch {
+      setTradingViewError('Unable to copy to clipboard.')
+    } finally {
+      setTradingViewActionState(null)
+    }
+  }
+
   function formatPercent(value: number | null | undefined): string {
     if (value === null || value === undefined || Number.isNaN(value)) return '-'
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
@@ -857,12 +1362,105 @@ export default function App() {
     return value.toFixed(0)
   }
 
+  const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
+  const resolvedTradingViewSecret = tradingViewStatus?.secret ?? tradingViewSecret
+  const resolvedTradingViewProduct = tradingViewProduct
+  const tradingViewStrategyPayload = {
+    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
+    strategy: tradingViewStrategyName || 'Nubra Strategy Alert',
+    instrument: tradingViewSymbol || 'RELIANCE',
+    exchange: tradingViewExchange || 'NSE',
+    order_side: '{{strategy.order.action}}',
+    order_delivery_type: resolvedTradingViewProduct,
+    price_type: 'MARKET',
+    order_qty: '{{strategy.order.contracts}}',
+    position_size: '{{strategy.position_size}}',
+    tag: tradingViewTag || undefined,
+  }
+  const tradingViewLinePayload = {
+    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
+    strategy: tradingViewStrategyName || 'Nubra Line Alert',
+    instrument: tradingViewSymbol || 'RELIANCE',
+    exchange: tradingViewExchange || 'NSE',
+    order_side: tradingViewOrderAction,
+    order_delivery_type: resolvedTradingViewProduct,
+    price_type: 'MARKET',
+    order_qty: Number(tradingViewQuantity || '1'),
+    tag: tradingViewTag || undefined,
+  }
+  const tradingViewStrategyJson = JSON.stringify(tradingViewStrategyPayload, null, 2)
+  const tradingViewLineJson = JSON.stringify(tradingViewLinePayload, null, 2)
+  const filteredHistory = (tradingViewStatus?.history ?? []).filter((entry) =>
+    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
+  )
+  const filteredOrderHistory = (tradingViewStatus?.order_history ?? []).filter((entry) =>
+    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
+  )
+  const filteredPositions = (tradingViewStatus?.positions ?? []).filter((position) => {
+    if (historySourceFilter === 'all') return true
+    const matchingTrade = filteredOrderHistory.find(
+      (entry) =>
+        (entry.strategy ?? null) === (position.strategy ?? null) &&
+        (entry.tag ?? null) === (position.tag ?? null) &&
+        entry.instrument === position.instrument &&
+        entry.exchange === position.exchange,
+    )
+    return Boolean(matchingTrade)
+  })
+  const webhookConfigured = Boolean(tradingViewStatus?.configured)
+  const tunnelReady = Boolean(tunnelStatus?.public_url)
+  const hasTestHistory = (tradingViewStatus?.history ?? []).some((entry) => entry.source === 'test')
+  const executionEnabled = tradingViewStatus?.execution_enabled !== false
+  const pnlSummary = tradingViewStatus?.pnl_summary ?? {
+    realized_pnl: 0,
+    unrealized_pnl: 0,
+    total_pnl: 0,
+    open_positions: 0,
+    closed_groups: 0,
+  }
+  const nextWebhookAction = !webhookConfigured
+    ? 'Step 1: save your webhook secret and default product.'
+    : !tunnelReady
+      ? 'Step 2: generate the public webhook URL.'
+      : !hasTestHistory
+        ? 'Step 4: send a test payload before going live.'
+        : !executionEnabled
+          ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.'
+          : 'Setup complete. Copy the live URL and payload into TradingView.'
+
+  async function handleTradingViewTest() {
+    if (!session || session.is_demo) return
+    setTradingViewError('')
+    setTradingViewActionState('test')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' },
+        body: JSON.stringify(tradingViewLinePayload),
+      })
+      const data = (await response.json()) as Record<string, unknown> | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to send test webhook payload.'))
+      }
+      setTradingViewMessage('Test payload sent. Check webhook activity below for capture and order result.')
+      const statusResponse = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
+      const statusData = (await statusResponse.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
+      if (statusResponse.ok) {
+        setTradingViewStatus(statusData as TradingViewWebhookStatusResponse)
+      }
+    } catch (err) {
+      setTradingViewError(err instanceof Error ? err.message : 'Unable to send test webhook payload.')
+    } finally {
+      setTradingViewActionState(null)
+    }
+  }
+
   function renderDashboardNav(activeTab: string) {
     return (
       <section className="dashboard-topbar">
         <header className="dashboard-nav">
           <div className="dashboard-brand">
-            <div className="brand-mark">N</div>
+            <img src={nubraLogo} alt="Nubra" className="brand-logo dashboard-brand-logo" />
             <div className="dashboard-brand-copy">
               <span>NubraOSS</span>
               <small>Trading workspace</small>
@@ -882,12 +1480,38 @@ export default function App() {
           </nav>
 
           <div className="dashboard-actions">
-            <span className="pill pill-dark">
-              {session?.environment === 'UAT' ? 'UAT' : 'PROD'}
-            </span>
-            <button type="button" className="secondary-button" onClick={() => resetSession()}>
-              Log out
-            </button>
+            <div className="profile-menu">
+              <button
+                type="button"
+                className="avatar-pill profile-trigger"
+                onClick={() => setProfileMenuOpen((open) => !open)}
+                aria-expanded={profileMenuOpen}
+                aria-haspopup="menu"
+              >
+                {session?.user_name?.[0] ?? 'N'}
+              </button>
+              {profileMenuOpen ? (
+                <div className="profile-popover" role="menu" aria-label="Profile menu">
+                  <div className="profile-popover-header">
+                    <strong>{session?.user_name ?? 'Nubra User'}</strong>
+                    <span>{session?.account_id ?? 'NUBRA'}</span>
+                  </div>
+                  <div className="profile-meta">
+                    <span className="pill">{session?.broker.toLowerCase() ?? 'nubra'}</span>
+                    <span className="pill pill-dark">
+                      {session?.environment === 'UAT' ? 'UAT Mode' : 'Live Mode'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button profile-logout"
+                    onClick={() => resetSession()}
+                  >
+                    Logout
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -895,9 +1519,9 @@ export default function App() {
           <div className="dashboard-meta-spacer" />
           <div className="public-ip-card">
             <span className="public-ip-label">Public IP</span>
-            <strong>{publicIp || 'Loading...'}</strong>
+              <strong>{publicIp || 'Loading...'}</strong>
+            </div>
           </div>
-        </div>
       </section>
     )
   }
@@ -1266,6 +1890,532 @@ export default function App() {
     )
   }
 
+  if (view === 'tradingview-webhook') {
+    return (
+      <main className="dashboard-shell">
+        <section className="dashboard-panel">
+          {renderDashboardNav('TradingView')}
+
+          <section className="dashboard-header no-code-header">
+            <div>
+              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
+                {'< Back to Dashboard'}
+              </button>
+              <h1>TradingView Webhook</h1>
+              <p>Configure the Nubra webhook, copy either the manual or strategy alert JSON, and monitor incoming TradingView executions.</p>
+            </div>
+            <div className="header-actions">
+              <span className="pill">
+                {tradingViewStatus?.configured ? 'Configured' : 'Not configured'}
+              </span>
+              <span className="pill">
+                {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'Intraday' : 'CNC'}
+              </span>
+              <span className={tradingViewStatus?.execution_enabled === false ? 'pill pill-danger' : 'pill pill-success'}>
+                {tradingViewStatus?.execution_enabled === false ? 'Kill Switch On' : 'Execution On'}
+              </span>
+            </div>
+          </section>
+
+          <section className="dashboard-info-card webhook-guide-banner">
+            <div>
+              <strong>Next Step</strong>
+              <p>{nextWebhookAction}</p>
+            </div>
+            <div className="history-meta-row">
+              <span className={webhookConfigured ? 'pill pill-success' : 'pill'}>1. Config {webhookConfigured ? 'Done' : 'Pending'}</span>
+              <span className={tunnelReady ? 'pill pill-success' : 'pill'}>2. URL {tunnelReady ? 'Done' : 'Pending'}</span>
+              <span className={hasTestHistory ? 'pill pill-success' : 'pill'}>3. Test {hasTestHistory ? 'Done' : 'Pending'}</span>
+              <span className={executionEnabled ? 'pill pill-success' : 'pill pill-danger'}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
+            </div>
+          </section>
+
+          <section className="webhook-summary-grid">
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Realized P&L</span>
+              <strong>{pnlSummary.realized_pnl.toFixed(2)}</strong>
+              <small>Closed webhook trades matched by strategy, tag, and instrument.</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Unrealized P&L</span>
+              <strong>{pnlSummary.unrealized_pnl.toFixed(2)}</strong>
+              <small>Mark-to-market on currently open webhook positions.</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Total P&L</span>
+              <strong>{pnlSummary.total_pnl.toFixed(2)}</strong>
+              <small>Combined realized and open-position webhook trading P&L.</small>
+            </article>
+            <article className="dashboard-module-card compact-card">
+              <span className="summary-label">Open / Closed Groups</span>
+              <strong>{pnlSummary.open_positions} / {pnlSummary.closed_groups}</strong>
+              <small>Grouped by strategy, tag, and instrument for clean tracking.</small>
+            </article>
+          </section>
+
+          <section className="webhook-step-section">
+            <div className="step-heading">
+              <span className={webhookConfigured ? 'step-badge done' : 'step-badge'}>1</span>
+              <div>
+                <h2>Configure Webhook</h2>
+                <p>Save your secret and default product first. Everything else depends on this step.</p>
+              </div>
+            </div>
+
+          <section className="tradingview-grid">
+            <article className="dashboard-module-card">
+              <h2>Secret and Product</h2>
+              <p className="module-subtitle">
+                Save one secret and product type. TradingView can then post directly into NubraOSS.
+              </p>
+
+              <label className="field-group">
+                <span>Webhook Secret</span>
+                <input
+                  value={tradingViewSecret}
+                  onChange={(event) => setTradingViewSecret(event.target.value)}
+                  placeholder="Auto-generated if left blank"
+                />
+              </label>
+
+              <label className="field-group">
+                <span>Default Product</span>
+                <select
+                  value={tradingViewProduct}
+                  onChange={(event) => setTradingViewProduct(event.target.value as OrderDeliveryType)}
+                >
+                  <option value="ORDER_DELIVERY_TYPE_IDAY">Intraday (MIS)</option>
+                  <option value="ORDER_DELIVERY_TYPE_CNC">Delivery (CNC)</option>
+                </select>
+              </label>
+
+              <div className="kill-switch-card">
+                <div>
+                  <strong>Execution Kill Switch</strong>
+                  <p className="module-subtitle">
+                    Turn this off to stop all webhook order placements while still keeping request history.
+                  </p>
+                </div>
+                <div className="kill-switch-actions">
+                  <button
+                    type="button"
+                    className={tradingViewStatus?.execution_enabled === false ? 'secondary-button' : 'primary-button'}
+                    onClick={() => handleTradingViewKillSwitch(true)}
+                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
+                  >
+                    Enable
+                  </button>
+                  <button
+                    type="button"
+                    className={tradingViewStatus?.execution_enabled === false ? 'primary-button' : 'secondary-button'}
+                    onClick={() => handleTradingViewKillSwitch(false)}
+                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
+                  >
+                    Kill Switch
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="primary-button wide-button"
+                onClick={handleTradingViewConfigure}
+                disabled={!session || Boolean(session?.is_demo) || tradingViewActionState !== null}
+              >
+                {tradingViewActionState === 'configure' ? 'Saving...' : 'Save TradingView Webhook'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button wide-button"
+                onClick={handleTradingViewReset}
+                disabled={tradingViewActionState !== null || !tradingViewStatus?.configured}
+              >
+                {tradingViewActionState === 'reset' ? 'Resetting...' : 'Reset Webhook'}
+              </button>
+            </article>
+          </section>
+          </section>
+
+          <section className="webhook-step-section">
+            <div className="step-heading">
+              <span className={tunnelReady ? 'step-badge done' : 'step-badge'}>2</span>
+              <div>
+                <h2>Generate Public URL</h2>
+                <p>Create the public HTTPS endpoint that TradingView or Postman will send requests to.</p>
+              </div>
+            </div>
+
+          <section className="tradingview-grid">
+            <article className="dashboard-module-card">
+              <h2>Public Endpoint</h2>
+              <p className="module-subtitle">
+                Use the built-in Cloudflare tunnel so TradingView can reach your local machine.
+              </p>
+
+              <div className="tunnel-grid">
+                <div className="tunnel-panel">
+                  <span className="summary-label">Webhook URL</span>
+                  <strong className="tunnel-url">
+                    {tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : 'Generate URL first'}
+                  </strong>
+                  <small>
+                    TradingView requires a public HTTPS endpoint. Start the tunnel once and reuse this URL while it stays running.
+                  </small>
+                </div>
+                <div className="tunnel-panel">
+                  <span className="summary-label">Session</span>
+                  <strong>{tradingViewStatus?.user_name ?? session?.user_name ?? 'Nubra User'}</strong>
+                  <small>{session?.environment ?? 'UAT'} / {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS' : 'CNC'}</small>
+                </div>
+              </div>
+
+              <div className="tunnel-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => handleTunnelAction('start')}
+                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
+                >
+                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleTunnelAction('refresh')}
+                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleTunnelAction('stop')}
+                  disabled={!tunnelStatus?.running || tunnelAction !== null}
+                >
+                  Stop
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => copyToClipboard(webhookUrl, 'copy-url')}
+                  disabled={!webhookUrl || tradingViewActionState !== null}
+                >
+                  {tradingViewActionState === 'copy-url' ? 'Copying...' : 'Copy Webhook URL'}
+                </button>
+              </div>
+            </article>
+          </section>
+          </section>
+
+          <section className="webhook-step-section">
+            <div className="step-heading">
+              <span className="step-badge">3</span>
+              <div>
+                <h2>Build Payload</h2>
+                <p>Choose manual or strategy mode, set your fields, and generate the Nubra JSON alert body.</p>
+              </div>
+            </div>
+          <section className="dashboard-module-card tradingview-builder-card">
+            <div className="code-card-header">
+              <div>
+                <h2>Payload Builder</h2>
+                <p className="module-subtitle">Generate the exact JSON alert body your TradingView alert should send.</p>
+              </div>
+              <div className="mode-toggle">
+                <button
+                  type="button"
+                  className={tradingViewMode === 'line' ? 'indicator-box active' : 'indicator-box'}
+                  onClick={() => setTradingViewMode('line')}
+                >
+                  Line Alert
+                </button>
+                <button
+                  type="button"
+                  className={tradingViewMode === 'strategy' ? 'indicator-box active' : 'indicator-box'}
+                  onClick={() => setTradingViewMode('strategy')}
+                >
+                  Strategy Alert
+                </button>
+              </div>
+            </div>
+
+            <div className="tradingview-form-grid">
+              <label className="field-group">
+                <span>Strategy Name</span>
+                <input value={tradingViewStrategyName} onChange={(event) => setTradingViewStrategyName(event.target.value)} />
+              </label>
+              <label className="field-group">
+                <span>Symbol</span>
+                <input value={tradingViewSymbol} onChange={(event) => setTradingViewSymbol(event.target.value.toUpperCase())} />
+              </label>
+              <label className="field-group">
+                <span>Exchange</span>
+                <select value={tradingViewExchange} onChange={(event) => setTradingViewExchange(event.target.value)}>
+                  <option value="NSE">NSE</option>
+                  <option value="BSE">BSE</option>
+                </select>
+              </label>
+              <label className="field-group">
+                <span>Action</span>
+                <select value={tradingViewOrderAction} onChange={(event) => setTradingViewOrderAction(event.target.value as TradingViewAction)}>
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                </select>
+              </label>
+              <label className="field-group">
+                <span>Quantity</span>
+                <input value={tradingViewQuantity} onChange={(event) => setTradingViewQuantity(event.target.value.replace(/\D/g, '') || '1')} />
+              </label>
+              <label className="field-group">
+                <span>Tag</span>
+                <input value={tradingViewTag} onChange={(event) => setTradingViewTag(event.target.value)} placeholder="swing-1 or 2026-04-15" />
+              </label>
+              <label className="field-group">
+                <span>Product</span>
+                <input value={resolvedTradingViewProduct} disabled />
+              </label>
+            </div>
+
+              <div className="dashboard-info-card compact-info-row">
+                <div>
+                  <strong>How to use</strong>
+                  <p>
+                    Configure the webhook first, copy the URL into TradingView, then paste the generated Nubra alert JSON below into the alert message box.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                className="primary-button"
+                onClick={handleTradingViewTest}
+                disabled={!tradingViewStatus?.configured || !session || Boolean(session.is_demo) || tradingViewActionState !== null}
+              >
+                {tradingViewActionState === 'test' ? 'Sending...' : 'Send Test Payload'}
+              </button>
+            </div>
+          </section>
+          </section>
+
+          <section className="webhook-step-section">
+            <div className="step-heading">
+              <span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span>
+              <div>
+                <h2>Copy and Test</h2>
+                <p>Copy the payload you need, then send a test order before you switch to live TradingView alerts.</p>
+              </div>
+            </div>
+          <section className="tradingview-grid">
+            <article className="dashboard-module-card code-card">
+              <div className="code-card-header">
+                <div>
+                  <h2>Nubra Strategy JSON</h2>
+                  <p className="module-subtitle">Use this for TradingView strategy scripts where side and quantity come from TradingView placeholders.</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')}
+                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
+                >
+                  {tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}
+                </button>
+              </div>
+              <pre className="code-block">{tradingViewStrategyJson}</pre>
+            </article>
+
+            <article className="dashboard-module-card code-card">
+              <div className="code-card-header">
+                <div>
+                  <h2>Nubra Manual Alert JSON</h2>
+                  <p className="module-subtitle">Use this for normal alerts where you want to send a fixed side and quantity in the message.</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')}
+                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
+                >
+                  {tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}
+                </button>
+              </div>
+              <pre className="code-block">{tradingViewLineJson}</pre>
+            </article>
+          </section>
+          </section>
+
+          <section className="webhook-step-section">
+            <div className="step-heading">
+              <span className={executionEnabled ? 'step-badge done' : 'step-badge blocked'}>5</span>
+              <div>
+                <h2>Go Live and Monitor</h2>
+                <p>After a successful test, paste the URL and payload into TradingView and watch history below for live traffic.</p>
+              </div>
+            </div>
+
+          <section className="tradingview-grid">
+            <article className="dashboard-module-card">
+              <div className="code-card-header">
+                <div>
+                  <h2>Webhook Order History</h2>
+                  <p className="module-subtitle">Every accepted webhook order with time, quantity, sent price, fill price, and current mark-to-market.</p>
+                </div>
+                <div className="history-meta-row">
+                  <span className="pill">{filteredOrderHistory.length} orders</span>
+                </div>
+              </div>
+              {filteredOrderHistory.length === 0 ? (
+                <div className="table-empty">No accepted webhook orders yet.</div>
+              ) : (
+                <div className="table-shell">
+                  <div className="table-row table-head webhook-order-grid">
+                    <span>Time</span>
+                    <span>Trade</span>
+                    <span>Qty / Status</span>
+                    <span>Prices</span>
+                    <span>P&amp;L</span>
+                  </div>
+                  {filteredOrderHistory.map((entry) => (
+                    <div key={`${entry.time_ist}-${entry.order_id ?? entry.instrument ?? 'trade'}`} className="table-row webhook-order-grid">
+                      <span>
+                        <strong>{entry.time_ist}</strong>
+                        <small>{entry.source === 'test' ? 'Test' : 'Live'}</small>
+                      </span>
+                      <span>
+                        <strong>{entry.instrument ?? '-'}</strong>
+                        <small>
+                          {(entry.action ?? '-')} | {entry.strategy ?? 'No strategy'} | {entry.tag ?? 'No tag'}
+                        </small>
+                      </span>
+                      <span>
+                        <strong>{entry.filled_qty ?? entry.placed_qty ?? entry.requested_qty ?? '-'}</strong>
+                        <small>{entry.order_status ?? 'Pending'}</small>
+                      </span>
+                      <span>
+                        <strong>Fill {entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong>
+                        <small>
+                          Sent {entry.order_price?.toFixed(2) ?? 'Pending'} | LTP {entry.current_price?.toFixed(2) ?? 'Pending'}
+                        </small>
+                      </span>
+                      <span>
+                        <strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong>
+                        <small>Order #{entry.order_id ?? '-'} </small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="dashboard-module-card">
+              <div className="code-card-header">
+                <div>
+                  <h2>Webhook Positions</h2>
+                  <p className="module-subtitle">Matched positions and P&amp;L grouped by strategy, tag, and instrument.</p>
+                </div>
+                <div className="history-meta-row">
+                  <span className="pill">{filteredPositions.length} groups</span>
+                </div>
+              </div>
+              {filteredPositions.length === 0 ? (
+                <div className="table-empty">No grouped webhook positions yet.</div>
+              ) : (
+                <div className="position-ledger-list">
+                  {filteredPositions.map((position) => (
+                    <div key={`${position.strategy ?? 'none'}-${position.tag ?? 'none'}-${position.instrument}-${position.exchange}`} className="position-ledger-card">
+                      <div className="position-ledger-head">
+                        <div>
+                          <strong>{position.instrument}</strong>
+                          <small>
+                            {position.exchange} | {position.strategy ?? 'No strategy'} | {position.tag ?? 'No tag'}
+                          </small>
+                        </div>
+                        <span className={position.direction === 'LONG' ? 'pill pill-success' : position.direction === 'SHORT' ? 'pill pill-danger' : 'pill'}>
+                          {position.direction}
+                        </span>
+                      </div>
+                      <div className="history-stats-grid position-ledger-grid">
+                        <div><span>Net Qty</span><strong>{position.net_qty}</strong></div>
+                        <div><span>Avg Entry</span><strong>{position.avg_entry_price?.toFixed(2) ?? 'Pending'}</strong></div>
+                        <div><span>Current Price</span><strong>{position.current_price?.toFixed(2) ?? 'Pending'}</strong></div>
+                        <div><span>Realized</span><strong>{position.realized_pnl.toFixed(2)}</strong></div>
+                        <div><span>Unrealized</span><strong>{position.unrealized_pnl.toFixed(2)}</strong></div>
+                        <div><span>Total P&amp;L</span><strong>{position.total_pnl.toFixed(2)}</strong></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </section>
+
+          <article className="dashboard-module-card">
+            <div className="code-card-header">
+              <div>
+                <h2>Webhook Event Log</h2>
+                <p className="module-subtitle">Raw request and execution logs for test sends and live TradingView webhook traffic.</p>
+              </div>
+              <div className="mode-toggle">
+                <button type="button" className={historySourceFilter === 'all' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('all')}>
+                  All
+                </button>
+                <button type="button" className={historySourceFilter === 'test' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('test')}>
+                  Test
+                </button>
+                <button type="button" className={historySourceFilter === 'live' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('live')}>
+                  Live
+                </button>
+              </div>
+            </div>
+            {(filteredHistory ?? []).length === 0 ? (
+              <div className="table-empty">No webhook history yet.</div>
+            ) : (
+              <div className="webhook-log-list">
+                {filteredHistory.map((entry) => (
+                  <div key={entry.id} className={`webhook-log-item ${entry.status === 'accepted' ? 'success' : entry.status === 'error' || entry.status === 'blocked' ? 'error' : ''}`}>
+                    <div className="webhook-log-head">
+                      <strong>{entry.message}</strong>
+                      <span>{entry.time_ist}</span>
+                    </div>
+                    <div className="history-meta-row">
+                      <span className="pill">{entry.source === 'test' ? 'Test' : 'Live'}</span>
+                      <span className="pill">{entry.status}</span>
+                      <span className="pill">{entry.strategy ?? 'No strategy'}</span>
+                      <span className="pill">{entry.tag ?? 'No tag'}</span>
+                      <span className="pill">{entry.day_ist}</span>
+                    </div>
+                    <div className="history-stats-grid">
+                      <div><span>Instrument</span><strong>{entry.instrument ?? '-'}</strong></div>
+                      <div><span>Action</span><strong>{entry.action ?? '-'}</strong></div>
+                      <div><span>Qty</span><strong>{entry.quantity ?? '-'}</strong></div>
+                      <div><span>Order</span><strong>{entry.order_status ?? '-'}</strong></div>
+                      <div><span>P&L</span><strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong></div>
+                    </div>
+                    <div className="history-stats-grid history-stats-grid-detail">
+                      <div><span>Requested Qty</span><strong>{entry.requested_qty ?? '-'}</strong></div>
+                      <div><span>Placed Qty</span><strong>{entry.placed_qty ?? '-'}</strong></div>
+                      <div><span>Filled Qty</span><strong>{entry.filled_qty ?? '-'}</strong></div>
+                      <div><span>Order Price</span><strong>{entry.order_price?.toFixed(2) ?? 'Pending'}</strong></div>
+                      <div><span>Avg Fill Price</span><strong>{entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong></div>
+                      <div><span>LTP Used</span><strong>{entry.ltp_price?.toFixed(2) ?? 'Pending'}</strong></div>
+                      <div><span>Order ID</span><strong>{entry.order_id ?? '-'}</strong></div>
+                      <div><span>Ref ID</span><strong>{entry.ref_id ?? '-'}</strong></div>
+                      <div><span>Lot Size</span><strong>{entry.lot_size ?? '-'}</strong></div>
+                      <div><span>Tick Size</span><strong>{entry.tick_size ?? '-'}</strong></div>
+                    </div>
+                    {entry.payload ? <pre className="code-block compact">{JSON.stringify(entry.payload, null, 2)}</pre> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+          </section>
+
+          {tradingViewError ? <section className="error-banner dashboard-error">{tradingViewError}</section> : null}
+          {tradingViewMessage ? <section className="message-banner dashboard-info-card">{tradingViewMessage}</section> : null}
+        </section>
+      </main>
+    )
+  }
+
   if (view === 'dashboard') {
     return (
       <main className="dashboard-shell">
@@ -1287,14 +2437,14 @@ export default function App() {
               <article
                 key={card.title}
                 className={card.key ? 'dashboard-module-card is-clickable' : 'dashboard-module-card'}
-                onClick={card.key ? () => setView(card.key) : undefined}
+                onClick={card.key ? () => handleDashboardCardOpen(card.key) : undefined}
                 role={card.key ? 'button' : undefined}
                 tabIndex={card.key ? 0 : undefined}
                 onKeyDown={
                   card.key
                     ? (event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
-                          setView(card.key)
+                          handleDashboardCardOpen(card.key)
                         }
                       }
                     : undefined
@@ -1316,9 +2466,80 @@ export default function App() {
                 Nubra-native modules we will build next.
               </p>
             </div>
-            <button type="button" className="secondary-button">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => window.open('https://docs.nubra.io', '_blank', 'noopener,noreferrer')}
+            >
               View Documentation
             </button>
+          </section>
+
+          <section className="dashboard-module-card tunnel-card">
+            <div className="tunnel-card-header">
+              <div>
+                <h2>Public Webhook URL</h2>
+                <p>Start a built-in Cloudflare tunnel so TradingView can reach your local NubraOSS backend.</p>
+              </div>
+              <div className="tunnel-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => handleTunnelAction('start')}
+                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
+                >
+                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleTunnelAction('refresh')}
+                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => handleTunnelAction('stop')}
+                  disabled={!tunnelStatus?.running || tunnelAction !== null}
+                >
+                  Stop
+                </button>
+              </div>
+            </div>
+
+            <div className="tunnel-grid">
+              <div className="tunnel-panel">
+                <span className="summary-label">Webhook URL</span>
+                <strong className="tunnel-url">
+                  {tunnelStatus?.public_url ?? 'Not generated yet'}
+                </strong>
+                <small>TradingView target: {(tunnelStatus?.public_url ?? 'Generate URL') + '/api/webhooks/tradingview'}</small>
+              </div>
+              <div className="tunnel-panel">
+                <span className="summary-label">Target</span>
+                <strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong>
+                <small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small>
+              </div>
+            </div>
+
+            {tunnelStatus?.last_error ? <div className="error-banner">{tunnelStatus.last_error}</div> : null}
+
+            <div className="tunnel-log-card">
+              <span className="summary-label">Tunnel Logs</span>
+              {(tunnelStatus?.logs ?? []).length === 0 ? (
+                <div className="table-empty">No tunnel logs yet.</div>
+              ) : (
+                <div className="tunnel-log-list">
+                  {(tunnelStatus?.logs ?? []).slice(-6).map((line, index) => (
+                    <div key={`${index}-${line}`} className="tunnel-log-line">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         </section>
       </main>
@@ -1331,7 +2552,7 @@ export default function App() {
         <section className="hero-panel">
           <div className="hero-surface">
             <div className="brand-block">
-              <div className="brand-mark">N</div>
+              <img src={nubraLogo} alt="Nubra" className="brand-logo hero-brand-logo" />
               <div>
                 <div className="brand-name">NubraOSS</div>
                 <div className="brand-caption">Personal algo trading workspace</div>
@@ -1362,6 +2583,16 @@ export default function App() {
             <div className="title-block">
               <h1>Sign in to Nubra</h1>
               <p>{helperText}</p>
+            </div>
+
+            <div className="demo-banner">
+              <div>
+                <strong>Need a safe test path?</strong>
+                <span>Use demo mode to inspect the latest UI without real credentials.</span>
+              </div>
+              <button type="button" className="secondary-button demo-button" onClick={handleDemoLogin}>
+                Enter Demo
+              </button>
             </div>
 
             <div className="env-switch" role="tablist" aria-label="Environment">

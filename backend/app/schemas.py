@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -59,6 +59,167 @@ class SessionStatusResponse(BaseModel):
     environment: Environment
     expires_at_utc: str | None
     message: str
+
+
+class TunnelStatusResponse(BaseModel):
+    running: bool
+    public_url: str | None
+    target_url: str
+    last_error: str | None
+    logs: list[str]
+
+
+class TradingViewWebhookLogEntry(BaseModel):
+    time_ist: str
+    level: Literal["info", "success", "error"]
+    message: str
+    payload: dict[str, Any] | None = None
+
+
+class TradingViewWebhookHistoryEntry(BaseModel):
+    id: str
+    time_ist: str
+    day_ist: str
+    source: Literal["test", "live"]
+    status: Literal["received", "accepted", "blocked", "error"]
+    strategy: str | None
+    tag: str | None
+    instrument: str | None
+    exchange: str | None
+    action: str | None
+    quantity: int | None
+    order_id: int | None
+    order_status: str | None
+    pnl: float | None
+    requested_qty: int | None
+    placed_qty: int | None
+    filled_qty: int | None
+    avg_filled_price: float | None
+    order_price: float | None
+    ltp_price: float | None
+    ref_id: int | None
+    lot_size: int | None
+    tick_size: int | None
+    message: str
+    payload: dict[str, Any] | None = None
+
+
+class TradingViewWebhookSummary(BaseModel):
+    total_events: int
+    live_events: int
+    test_events: int
+    blocked_events: int
+    error_events: int
+    accepted_events: int
+    today_pnl: float
+    today_orders: int
+
+
+class TradingViewWebhookOrderRow(BaseModel):
+    time_ist: str
+    source: Literal["test", "live"]
+    strategy: str | None
+    tag: str | None
+    instrument: str | None
+    exchange: str | None
+    action: str | None
+    requested_qty: int | None
+    placed_qty: int | None
+    filled_qty: int | None
+    order_price: float | None
+    avg_filled_price: float | None
+    current_price: float | None
+    order_id: int | None
+    order_status: str | None
+    pnl: float | None
+
+
+class TradingViewWebhookPositionRow(BaseModel):
+    strategy: str | None
+    tag: str | None
+    instrument: str
+    exchange: str
+    net_qty: int
+    avg_entry_price: float | None
+    current_price: float | None
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    direction: Literal["LONG", "SHORT", "FLAT"]
+
+
+class TradingViewWebhookPnlSummary(BaseModel):
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    open_positions: int
+    closed_groups: int
+
+
+class TradingViewWebhookConfigureRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    user_name: str = Field(min_length=1, max_length=128)
+    account_id: str = Field(min_length=1, max_length=128)
+    secret: str | None = Field(default=None, min_length=6, max_length=128)
+    order_delivery_type: Literal["ORDER_DELIVERY_TYPE_CNC", "ORDER_DELIVERY_TYPE_IDAY"] = "ORDER_DELIVERY_TYPE_IDAY"
+
+
+class TradingViewWebhookStatusResponse(BaseModel):
+    configured: bool
+    environment: Environment | None
+    broker: Literal["Nubra"] | None
+    user_name: str | None
+    account_id: str | None
+    configured_at_utc: str | None
+    order_delivery_type: Literal["ORDER_DELIVERY_TYPE_CNC", "ORDER_DELIVERY_TYPE_IDAY"] | None
+    secret: str | None
+    has_secret: bool
+    webhook_path: str
+    webhook_url: str | None
+    strategy_template: dict[str, Any]
+    line_alert_template: dict[str, Any]
+    execution_enabled: bool
+    last_error: str | None
+    logs: list[TradingViewWebhookLogEntry]
+    history: list[TradingViewWebhookHistoryEntry]
+    summary: TradingViewWebhookSummary
+    order_history: list[TradingViewWebhookOrderRow]
+    positions: list[TradingViewWebhookPositionRow]
+    pnl_summary: TradingViewWebhookPnlSummary
+
+
+class TradingViewWebhookConfigureResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    config: TradingViewWebhookStatusResponse
+
+
+class TradingViewWebhookResetResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+
+
+class TradingViewWebhookExecutionModeRequest(BaseModel):
+    execution_enabled: bool
+
+
+class TradingViewWebhookExecutionModeResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    execution_enabled: bool
+
+
+class TradingViewWebhookExecuteResponse(BaseModel):
+    status: Literal["accepted"]
+    message: str
+    order_id: int | None
+    order_status: str | None
+    symbol: str
+    exchange: str
+    action: str
+    quantity: int
 
 
 Interval = Literal["1m", "2m", "3m", "5m", "15m", "30m", "1h"]
