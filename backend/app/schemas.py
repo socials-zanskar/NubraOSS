@@ -228,6 +228,58 @@ OrderDeliveryType = Literal["ORDER_DELIVERY_TYPE_CNC", "ORDER_DELIVERY_TYPE_IDAY
 StrategySideMode = Literal["BOTH", "LONG_ONLY", "SHORT_ONLY"]
 
 
+class ScalperSnapshotRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    underlying: str = Field(min_length=2, max_length=64)
+    exchange: Literal["NSE", "BSE"] = "NSE"
+    interval: Interval = "1m"
+    strike_price: int = Field(ge=1, le=1000000)
+    expiry: str | None = Field(default=None, max_length=64)
+    lookback_days: int = Field(default=5, ge=1, le=15)
+
+
+class ScalperCandle(BaseModel):
+    time_ist: str
+    epoch_ms: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None
+
+
+class ScalperChartPanel(BaseModel):
+    instrument: str
+    display_name: str
+    exchange: str
+    instrument_type: str
+    interval: Interval
+    last_price: float | None
+    candles: list[ScalperCandle]
+
+
+class ScalperResolvedOptionPair(BaseModel):
+    underlying: str
+    exchange: str
+    expiry: str | None
+    strike_price: int
+    call_display_name: str
+    put_display_name: str
+    lot_size: int | None
+    tick_size: int | None
+
+
+class ScalperSnapshotResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    underlying: ScalperChartPanel
+    call_option: ScalperChartPanel
+    put_option: ScalperChartPanel
+    option_pair: ScalperResolvedOptionPair
+
+
 class NoCodeEmaConfig(BaseModel):
     fast: int = Field(ge=1, le=500)
     slow: int = Field(ge=1, le=500)

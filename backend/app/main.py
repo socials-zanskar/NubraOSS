@@ -1,6 +1,7 @@
+import asyncio
 from typing import Any
 
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -12,6 +13,8 @@ from app.schemas import (
     NoCodeStartResponse,
     NoCodeStatusResponse,
     NoCodeStopResponse,
+    ScalperSnapshotRequest,
+    ScalperSnapshotResponse,
     SessionStatusRequest,
     SessionStatusResponse,
     StartLoginRequest,
@@ -38,6 +41,8 @@ from app.schemas import (
 from app.services.auth_service import auth_service
 from app.services.instrument_service import instrument_service
 from app.services.no_code_service import no_code_service
+from app.services.scalper_live_service import ScalperLiveSession
+from app.services.scalper_service import scalper_service
 from app.services.tradingview_webhook_service import tradingview_webhook_service
 from app.services.tunnel_service import tunnel_service
 from app.services.volume_breakout_service import volume_breakout_service
@@ -182,6 +187,45 @@ def search_stocks(payload: StockSearchRequest) -> StockSearchResponse:
         limit=payload.limit,
     )
     return StockSearchResponse(items=items)
+
+
+@app.post("/api/scalper/snapshot", response_model=ScalperSnapshotResponse)
+def get_scalper_snapshot(payload: ScalperSnapshotRequest) -> ScalperSnapshotResponse:
+    return scalper_service.snapshot(payload)
+
+
+@app.websocket("/ws/scalper")
+async def scalper_live_ws(websocket: WebSocket) -> None:
+    """
+    Live scalper WebSocket endpoint.
+
+    Protocol:
+      1. Client connects.
+      2. Client sends a JSON init message matching ScalperSnapshotRequest fields.
+      3. Server responds with {"type": "init", "option_pair": {...}, "panels": {...}}
+         containing full historical candles for all three panels.
+      4. Server streams {"type": "candle_update", "panel": "...", "candle": {...}}
+         every poll interval as the current candle updates.
+      5. Every 5 minutes the server sends {"type": "reconcile", "panel": "...", "candles": [...]}
+         with the last 12 authoritative candles for drift correction.
+    """
+    await websocket.accept()
+    try:
+        raw = await asyncio.wait_for(websocket.receive_json(), timeout=20.0)
+        request = ScalperSnapshotRequest(**raw)
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008, reason="Timeout waiting for init params.")
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "error", "message": f"Invalid init params: {exc}"})
+        except Exception:
+            pass
+        await websocket.close(code=1008)
+        return
+
+    session = ScalperLiveSession(request=request)
+    await session.run(websocket)
 
 
 @app.get("/api/no-code/status", response_model=NoCodeStatusResponse)

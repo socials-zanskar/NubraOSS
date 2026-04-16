@@ -776,6 +776,21 @@ input {
   font-size: 0.69rem;
 }
 
+.webhook-config-card {
+  display: grid;
+  gap: 12px;
+}
+
+.webhook-config-card p,
+.webhook-config-card .module-subtitle {
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.webhook-config-card h2 {
+  margin-bottom: 2px;
+}
+
 .field-group {
   display: grid;
   gap: 8px;
@@ -1646,6 +1661,202 @@ input {
   border-color: #fecaca;
 }
 
+.scalper-terminal {
+  border: 1px solid #1f2937;
+  border-radius: 24px;
+  background: linear-gradient(180deg, #080b12 0%, #10151f 100%);
+  color: #e5edf7;
+  overflow: hidden;
+  box-shadow: 0 30px 60px rgba(2, 6, 23, 0.26);
+}
+
+.scalper-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #182131;
+  background: rgba(10, 15, 26, 0.96);
+}
+
+.scalper-toolbar-group {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scalper-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scalper-field span {
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #7c8ca5;
+}
+
+.scalper-field input,
+.scalper-field select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #2a3445;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #101722;
+  color: #f8fafc;
+  font-size: 0.84rem;
+}
+
+.scalper-toolbar-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.scalper-status-stack {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.scalper-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid #293446;
+  background: #0f1623;
+  color: #d9e4f2;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.scalper-terminal-header {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  padding: 14px 18px 0;
+}
+
+.scalper-terminal-title {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid #223047;
+  border-bottom: 0;
+  background: #0c121d;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.scalper-terminal-title.is-active {
+  background: #111a2b;
+  color: #f8fafc;
+}
+
+.scalper-chart-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  padding: 0 18px 18px;
+}
+
+.scalper-chart-card {
+  min-width: 0;
+  border: 1px solid #223047;
+  border-radius: 0;
+  padding: 14px 14px 12px;
+  background: #0c121d;
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.scalper-chart-card + .scalper-chart-card {
+  border-left: 0;
+}
+
+.scalper-chart-card.accent-blue,
+.scalper-chart-card.accent-green,
+.scalper-chart-card.accent-red {
+  box-shadow: none;
+}
+
+.scalper-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.scalper-chart-head > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.scalper-chart-head h3 {
+  margin: 4px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f8fafc;
+}
+
+.scalper-chart-price {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.scalper-chart-price strong {
+  display: block;
+  font-size: 0.96rem;
+  color: #f8fafc;
+}
+
+.scalper-chart-price small {
+  color: #7c8ca5;
+}
+
+.scalper-chart-canvas {
+  border: 1px solid #182131;
+  border-radius: 10px;
+  background: #0a0f1a;
+  padding: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scalper-terminal-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 22px 18px;
+  color: #94a3b8;
+  font-size: 0.74rem;
+}
+
+.scalper-terminal-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 960px) {
   .volume-summary-grid,
   .volume-breakout-grid,
@@ -1656,6 +1867,26 @@ input {
 
   .tradingview-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scalper-toolbar,
+  .scalper-terminal-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .scalper-toolbar-group {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scalper-chart-board,
+  .scalper-terminal-header {
+    grid-template-columns: 1fr;
+  }
+
+  .scalper-chart-card + .scalper-chart-card {
+    border-left: 1px solid #223047;
+    border-top: 0;
   }
 
   .volume-meta-stack {
@@ -1710,6 +1941,10 @@ input {
 
   .webhook-order-grid,
   .position-ledger-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scalper-toolbar-group {
     grid-template-columns: 1fr;
   }
 }
