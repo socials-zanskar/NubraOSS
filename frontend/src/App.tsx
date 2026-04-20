@@ -6,7 +6,8 @@ import { useScalperLive } from './hooks/useScalperLive'
 
 type Environment = 'PROD' | 'UAT'
 type Step = 'start' | 'otp' | 'mpin' | 'success'
-type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'
+type SignedOutView = 'landing' | 'login'
+type View = SignedOutView | 'dashboard' | 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'
 type TradingViewMode = 'strategy' | 'line'
 type TradingViewAction = 'BUY' | 'SELL'
 type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
@@ -283,6 +284,7 @@ interface VolumeBreakoutStartResponse {
 
 const API_BASE_URL = ''
 const SESSION_STORAGE_KEY = 'nubraoss.session'
+const AUTH_DEFAULT_MESSAGE = 'Enter your phone number, verify the OTP, then confirm MPIN.'
 
 const demoSession: SuccessResponse = {
   access_token: 'demo-access-token',
@@ -392,7 +394,7 @@ function formatCompactNumber(value: number | null | undefined): string {
 }
 
 export default function App() {
-  const [view, setView] = useState<View>(() => (loadStoredSession() ? 'dashboard' : 'login'))
+  const [view, setView] = useState<View>(() => (loadStoredSession() ? 'dashboard' : 'landing'))
   const [step, setStep] = useState<Step>(() => (loadStoredSession() ? 'success' : 'start'))
   const [environment, setEnvironment] = useState<Environment>(() => loadStoredSession()?.environment ?? 'PROD')
   const [phone, setPhone] = useState('')
@@ -400,7 +402,7 @@ export default function App() {
   const [mpin, setMpin] = useState('')
   const [flowId, setFlowId] = useState('')
   const [maskedPhone, setMaskedPhone] = useState('')
-  const [message, setMessage] = useState('Enter your phone number, verify the OTP, then confirm MPIN.')
+  const [message, setMessage] = useState(AUTH_DEFAULT_MESSAGE)
   const [error, setError] = useState('')
   const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'mpin' | null>(null)
   const [session, setSession] = useState<SuccessResponse | null>(() => loadStoredSession())
@@ -446,6 +448,21 @@ export default function App() {
   }, [theme])
 
   function toggleTheme() { setTheme((t) => t === 'dark' ? 'light' : 'dark') }
+
+  function resetAuthFlow(nextView: SignedOutView) {
+    setView(nextView)
+    setStep('start')
+    setPhone('')
+    setOtp('')
+    setMpin('')
+    setFlowId('')
+    setMaskedPhone('')
+    setOtpDigits(['', '', '', '', '', ''])
+    setMpinDigits(['', '', '', ''])
+    setError('')
+    setActiveAction(null)
+    setMessage(AUTH_DEFAULT_MESSAGE)
+  }
 
   function renderDashboardNav(pageLabel: string) {
     const initials = (session?.user_name ?? 'N').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase()
@@ -558,12 +575,7 @@ export default function App() {
 
   function resetSession(reason?: string) {
     setSession(null)
-    setView('login')
-    setStep('start')
-    setFlowId('')
-    setOtp('')
-    setMpin('')
-    setMaskedPhone('')
+    resetAuthFlow('landing')
     setVolumeBreakoutStatus(null)
     setPublicIp('')
     setProfileMenuOpen(false)
@@ -574,7 +586,7 @@ export default function App() {
     setTradingViewSecret('')
     setTradingViewMessage('Configure the webhook once, then paste the generated JSON into TradingView alerts.')
     setError(reason ?? '')
-    setMessage(reason ?? 'Enter your phone number, verify the OTP, then confirm MPIN.')
+    setMessage(reason ?? AUTH_DEFAULT_MESSAGE)
     fetch(`${API_BASE_URL}/api/strategy/live/stop`, { method: 'POST' }).catch(() => undefined)
     fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
   }
@@ -1475,6 +1487,75 @@ export default function App() {
     )
   }
 
+  if (view === 'landing') {
+    return (
+      <div className="auth-scene landing-scene">
+        <div className="auth-bg">
+          <div className="grid-pattern" />
+          <div className="ambient a1" />
+          <div className="ambient a2" />
+        </div>
+
+        <header className="auth-chrome">
+          <div className="logo">
+            <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={34} height={34} />
+            <span className="wm" style={{ fontSize: 16 }}>NubraOSS</span>
+          </div>
+          <div className="chrome-right">
+            <span className="chrome-meta"><span className="live-dot" />All systems nominal</span>
+            <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+              <span className={`tt-track ${theme}`}>
+                <span className="tt-thumb">
+                  {theme === 'dark'
+                    ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z" /></svg>
+                    : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4} /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4" /></svg>
+                  }
+                </span>
+              </span>
+            </button>
+          </div>
+        </header>
+
+        <main className="landing-stage">
+          <div className="landing-halo" aria-hidden />
+          <div className="eyebrow landing-eyebrow"><span className="eyebrow-dot" />INSTITUTIONAL GRADE · V2.0</div>
+          <h1 className="landing-title">NubraOSS</h1>
+          <p className="landing-sub">
+            The professional operating system for algorithmic execution.
+            <br />
+            Engineered for precision, built for scale.
+          </p>
+          <div className="landing-cta">
+            <button className="primary-btn landing-btn" onClick={() => resetAuthFlow('login')}>
+              <span>Initialize System</span>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+            <div className="landing-pills">
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 4.5-3.5 8-8 9-4.5-1-8-4.5-8-9V6l8-3z" /></svg>
+                Secure
+              </span>
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z" /></svg>
+                Low latency
+              </span>
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x={3} y={3} width={7} height={7} rx={1} /><rect x={14} y={3} width={7} height={7} rx={1} /><rect x={3} y={14} width={7} height={7} rx={1} /><rect x={14} y={14} width={7} height={7} rx={1} /></svg>
+                No-code
+              </span>
+            </div>
+          </div>
+        </main>
+
+        <footer className="auth-foot">
+          <span>&copy; 2026 NubraOSS</span>
+          <span>Sovereign-grade infrastructure</span>
+          <span>Build 2.0.17 / mumbai-1</span>
+        </footer>
+      </div>
+    )
+  }
+
   if (view === 'dashboard') {
     const moduleCards = [
       { key: 'no-code' as const,            title: 'No-Code Backtester', sub: 'Visual strategy authoring',    accent: 'rgb(124,207,94)',  glow: '124,207,94',  icon: 'backtest' },
@@ -1587,6 +1668,7 @@ export default function App() {
           <span className="wm" style={{ fontSize: 16 }}>NubraOSS</span>
         </div>
         <div className="chrome-right">
+          <button type="button" className="chrome-link" onClick={() => resetAuthFlow('landing')}>Overview</button>
           <span className="chrome-meta"><span className="live-dot"/>All systems nominal</span>
           <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
             <span className={`tt-track ${theme}`}>
@@ -1712,7 +1794,7 @@ export default function App() {
       <footer className="auth-foot">
         <span>© 2026 NubraOSS</span>
         <span>Sovereign-grade infrastructure</span>
-        <span>Build 2.0 / mumbai-1</span>
+        <span>Build 2.0.17 / mumbai-1</span>
       </footer>
     </div>
   )
