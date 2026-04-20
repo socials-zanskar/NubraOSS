@@ -7,12 +7,6 @@ import httpx
 
 from app.config import get_cors_origins, settings
 from app.schemas import (
-    NoCodeInstrumentMetaRequest,
-    NoCodeInstrumentMetaResponse,
-    NoCodeStartRequest,
-    NoCodeStartResponse,
-    NoCodeStatusResponse,
-    NoCodeStopResponse,
     ScalperSnapshotRequest,
     ScalperSnapshotResponse,
     SessionStatusRequest,
@@ -21,6 +15,18 @@ from app.schemas import (
     StartLoginResponse,
     StockSearchRequest,
     StockSearchResponse,
+    StrategyBacktestRequest,
+    StrategyBacktestResponse,
+    StrategyDailySignalLogRow,
+    StrategyEquityPoint,
+    StrategyInstrumentMetrics,
+    StrategyInstrumentResult,
+    StrategyPortfolioMetrics,
+    StrategyTrade,
+    StrategyLiveStartRequest,
+    StrategyLiveStartResponse,
+    StrategyLiveStatusResponse,
+    StrategyLiveStopResponse,
     TradingViewWebhookConfigureRequest,
     TradingViewWebhookConfigureResponse,
     TradingViewWebhookExecutionModeRequest,
@@ -40,9 +46,11 @@ from app.schemas import (
 )
 from app.services.auth_service import auth_service
 from app.services.instrument_service import instrument_service
-from app.services.no_code_service import no_code_service
 from app.services.scalper_live_service import ScalperLiveSession
 from app.services.scalper_service import scalper_service
+from app.services.strategy_backtester import parse_strategy, run_backtest
+from app.services.strategy_catalog import catalog_payload
+from app.services.strategy_live_service import strategy_live_service
 from app.services.tradingview_webhook_service import tradingview_webhook_service
 from app.services.tunnel_service import tunnel_service
 from app.services.volume_breakout_service import volume_breakout_service
@@ -163,18 +171,117 @@ def get_session_status(payload: SessionStatusRequest) -> SessionStatusResponse:
     return auth_service.session_status(payload)
 
 
-@app.post("/api/no-code/start", response_model=NoCodeStartResponse)
-def start_no_code(payload: NoCodeStartRequest) -> NoCodeStartResponse:
-    job = no_code_service.start(payload)
-    message = "No Code Algo started. Initial data pull completed."
-    if job.last_error:
-        message = f"No Code Algo started. Initial data pull reported: {job.last_error}"
-    return NoCodeStartResponse(status="success", message=message, job=job)
+@app.get("/api/strategy/catalog")
+def get_strategy_catalog() -> dict:
+    return catalog_payload()
 
 
-@app.post("/api/no-code/instrument-meta", response_model=NoCodeInstrumentMetaResponse)
-def get_no_code_instrument_meta(payload: NoCodeInstrumentMetaRequest) -> NoCodeInstrumentMetaResponse:
-    return no_code_service.get_instrument_meta(payload)
+@app.post("/api/strategy/backtest", response_model=StrategyBacktestResponse)
+def run_strategy_backtest(payload: StrategyBacktestRequest) -> StrategyBacktestResponse:
+    strategy = parse_strategy(payload.strategy)
+    result = run_backtest(
+        strategy=strategy,
+        session_token=payload.session_token,
+        device_id=payload.device_id,
+        environment=payload.environment,
+    )
+
+    instruments_out = [
+        StrategyInstrumentResult(
+            symbol=item.symbol,
+            bars_processed=item.bars_processed,
+            metrics=StrategyInstrumentMetrics(**item.metrics.__dict__),
+            trades=[
+                StrategyTrade(
+                    symbol=t.symbol,
+                    side=t.side,
+                    entry_timestamp=t.entry_timestamp,
+                    exit_timestamp=t.exit_timestamp,
+                    entry_price=t.entry_price,
+                    exit_price=t.exit_price,
+                    quantity=t.quantity,
+                    pnl=t.pnl,
+                    pnl_pct=t.pnl_pct,
+                    bars_held=t.bars_held,
+                    exit_reason=t.exit_reason,
+                    brokerage=t.brokerage,
+                )
+                for t in item.trades
+            ],
+            equity_curve=[
+                StrategyEquityPoint(timestamp=p.timestamp, equity=p.equity)
+                for p in item.equity_curve
+            ],
+            triggered_days=[
+                StrategyDailySignalLogRow(**r.__dict__)
+                for r in item.triggered_days
+            ],
+            daily_signal_log=[
+                StrategyDailySignalLogRow(**r.__dict__)
+                for r in item.daily_signal_log
+            ],
+            warning=item.warning,
+        )
+        for item in result.instruments
+    ]
+
+    portfolio_out = StrategyPortfolioMetrics(
+        starting_capital=result.portfolio.starting_capital,
+        ending_capital=result.portfolio.ending_capital,
+        gross_profit=result.portfolio.gross_profit,
+        gross_loss=result.portfolio.gross_loss,
+        net_pnl=result.portfolio.net_pnl,
+        return_pct=result.portfolio.return_pct,
+        total_trades=result.portfolio.total_trades,
+        winning_trades=result.portfolio.winning_trades,
+        losing_trades=result.portfolio.losing_trades,
+        win_rate_pct=result.portfolio.win_rate_pct,
+        profit_factor=result.portfolio.profit_factor,
+        max_drawdown_pct=result.portfolio.max_drawdown_pct,
+        capital_per_instrument=result.portfolio.capital_per_instrument,
+        total_brokerage=result.portfolio.total_brokerage,
+        equity_curve=[
+            StrategyEquityPoint(timestamp=p.timestamp, equity=p.equity)
+            for p in result.portfolio.equity_curve
+        ],
+    )
+
+    return StrategyBacktestResponse(
+        status="success",
+        mode=result.mode,
+        strategy_summary=result.strategy_summary,
+        portfolio=portfolio_out,
+        instruments=instruments_out,
+    )
+
+
+@app.post("/api/strategy/live/start", response_model=StrategyLiveStartResponse)
+def start_strategy_live(payload: StrategyLiveStartRequest) -> StrategyLiveStartResponse:
+    snapshot = strategy_live_service.start(
+        strategy_payload=payload.strategy,
+        session_token=payload.session_token,
+        device_id=payload.device_id,
+        environment=payload.environment,
+    )
+    message = "Strategy deployed live on IST interval boundaries."
+    if snapshot.get("last_error"):
+        message = f"Strategy deployed. Initial evaluation warned: {snapshot['last_error']}"
+    return StrategyLiveStartResponse(
+        status="success",
+        message=message,
+        job=StrategyLiveStatusResponse(**snapshot),
+    )
+
+
+@app.get("/api/strategy/live/status", response_model=StrategyLiveStatusResponse)
+def get_strategy_live_status() -> StrategyLiveStatusResponse:
+    return StrategyLiveStatusResponse(**strategy_live_service.status_payload())
+
+
+@app.post("/api/strategy/live/stop", response_model=StrategyLiveStopResponse)
+def stop_strategy_live() -> StrategyLiveStopResponse:
+    strategy_live_service.stop()
+    return StrategyLiveStopResponse(status="success", message="Strategy live runner stopped.")
 
 
 @app.post("/api/instruments/stocks/search", response_model=StockSearchResponse)
@@ -226,17 +333,6 @@ async def scalper_live_ws(websocket: WebSocket) -> None:
 
     session = ScalperLiveSession(request=request)
     await session.run(websocket)
-
-
-@app.get("/api/no-code/status", response_model=NoCodeStatusResponse)
-def get_no_code_status() -> NoCodeStatusResponse:
-    return no_code_service.status()
-
-
-@app.post("/api/no-code/stop", response_model=NoCodeStopResponse)
-def stop_no_code() -> NoCodeStopResponse:
-    no_code_service.stop()
-    return NoCodeStopResponse(status="success", message="No Code Algo stopped.")
 
 
 @app.post("/api/volume-breakout/start", response_model=VolumeBreakoutStartResponse)

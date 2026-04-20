@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import nubraLogo from './assets/nubra-logo.png'
+import nubraLogo from './assets/nubra.png'
 import ScalperLiveChart from './components/ScalperLiveChart'
+import StrategyBuilder from './components/StrategyBuilder'
 import { useScalperLive } from './hooks/useScalperLive'
 
 type Environment = 'PROD' | 'UAT'
@@ -9,9 +10,7 @@ type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout' | 'tradingview
 type TradingViewMode = 'strategy' | 'line'
 type TradingViewAction = 'BUY' | 'SELL'
 type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
-type Indicator = 'EMA' | 'MA' | 'RSI'
 type OrderDeliveryType = 'ORDER_DELIVERY_TYPE_CNC' | 'ORDER_DELIVERY_TYPE_IDAY'
-type StrategySideMode = 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY'
 
 interface StartResponse {
   flow_id: string
@@ -52,90 +51,6 @@ interface ApiErrorPayload {
   detail?: unknown
   message?: unknown
   error?: unknown
-}
-
-interface NoCodeAlert {
-  id: string
-  signal: string
-  instrument: string
-  interval: Interval
-  indicator: Indicator
-  candle_time_ist: string
-  triggered_at_ist: string
-  price: number
-  detail: string
-}
-
-interface NoCodeDebugSnapshot {
-  last_completed_candle_ist: string | null
-  last_close: number | null
-  indicator_values: Record<string, string | number | null>
-  dataframe_rows: Array<Record<string, string | number | null>>
-}
-
-interface NoCodeStatus {
-  running: boolean
-  instrument: string | null
-  interval: Interval | null
-  indicator: Indicator | null
-  strategy_side_mode: StrategySideMode | null
-  last_run_ist: string | null
-  next_run_ist: string | null
-  market_status: string
-  last_signal: string | null
-  last_error: string | null
-  alerts: NoCodeAlert[]
-  tracker_rows: Array<{
-    alert: string
-    side: string
-    position_state: string
-    time_ist: string
-  }>
-  debug: NoCodeDebugSnapshot | null
-  execution: {
-    enabled: boolean
-    instrument_ref_id: number | null
-    instrument_tick_size: number | null
-    instrument_lot_size: number | null
-    desired_side: string | null
-    position_side: string | null
-    position_qty: number
-    pending_order_id: number | null
-    pending_order_side: string | null
-    pending_order_action: string | null
-    pending_followup_signal: string | null
-    last_order_status: string | null
-    last_execution_status: string | null
-    last_order_update: Record<string, unknown> | null
-    last_positions_sync_ist: string | null
-  } | null
-}
-
-interface NoCodeInstrumentMeta {
-  instrument: string
-  ref_id: number
-  tick_size: number
-  lot_size: number
-}
-
-interface StockSearchItem {
-  instrument: string
-  display_name: string
-  exchange: string
-  ref_id: number
-  tick_size: number
-  lot_size: number
-}
-
-interface NoCodeStartResponse {
-  status: string
-  message: string
-  job: NoCodeStatus
-}
-
-interface NoCodeStopResponse {
-  status: string
-  message: string
 }
 
 interface PublicIpResponse {
@@ -368,63 +283,6 @@ interface VolumeBreakoutStartResponse {
 
 const API_BASE_URL = ''
 const SESSION_STORAGE_KEY = 'nubraoss.session'
-const dashboardTabs = ['Dashboard']
-
-const dashboardCards = [
-  {
-    badge: 'NC',
-    badgeClass: 'badge-indigo',
-    title: 'No Code Algo',
-    description: 'Visual strategy builder for creating and launching rule-based trading flows.',
-    footer: 'Open No Code Algo',
-    key: 'no-code' as const,
-  },
-  {
-    badge: 'VB',
-    badgeClass: 'badge-blue',
-    title: 'Volume Breakout',
-    description: 'Scan sector leaders and market-wide volume breakouts across major Indian stocks.',
-    footer: 'Open Scanner',
-    key: 'volume-breakout' as const,
-  },
-  {
-    badge: 'WS',
-    badgeClass: 'badge-emerald',
-    title: 'Webhook Strategies',
-    description: 'Manage alert-driven trading strategies and view active automation status.',
-    footer: 'Open Strategies',
-    key: 'tradingview-webhook' as const,
-  },
-  {
-    badge: 'SC',
-    badgeClass: 'badge-orange',
-    title: 'Scalper',
-    description: 'Dedicated intraday workspace for fast entries, quick decisions, and short-horizon execution flows.',
-    footer: 'Open Scalper',
-    key: 'scalper' as const,
-  },
-  {
-    badge: 'TB',
-    badgeClass: 'badge-slate',
-    title: 'Trade Book',
-    description: 'Review executed trades, fills, and trade-side summaries across the session.',
-    footer: 'Open Trade Book',
-  },
-  {
-    badge: 'OC',
-    badgeClass: 'badge-orange',
-    title: 'Option Chain',
-    description: 'Monitor live option chain data, strike context, and quick action flows.',
-    footer: 'Open Option Chain',
-  },
-  {
-    badge: 'RT',
-    badgeClass: 'badge-cyan',
-    title: 'Risk & Tools',
-    description: 'Launch margin checks, analytics utilities, and internal risk helpers.',
-    footer: 'Open Tools',
-  },
-]
 
 const demoSession: SuccessResponse = {
   access_token: 'demo-access-token',
@@ -453,94 +311,6 @@ function formatCompactVolume(value: number | null | undefined): string {
   if (Math.abs(value) >= 100000) return `${(value / 100000).toFixed(2)}L`
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)}K`
   return value.toFixed(0)
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
-}
-
-function ScalperChart({ title, panel, accent }: { title: string; panel: ScalperChartPanel | null; accent: 'blue' | 'green' | 'red' }) {
-  const candles = panel?.candles ?? []
-  const latest = candles[candles.length - 1] ?? null
-  const previous = candles[candles.length - 2] ?? null
-  const allPrices = candles.flatMap((candle) => [candle.high, candle.low])
-  const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0
-  const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 1
-  const priceRange = Math.max(maxPrice - minPrice, 1)
-  const visibleCandles = candles.slice(-72)
-  const chartHeight = 248
-  const volumeHeight = 48
-  const width = 100
-  const accentClass =
-    accent === 'green' ? 'scalper-chart-card accent-green' : accent === 'red' ? 'scalper-chart-card accent-red' : 'scalper-chart-card accent-blue'
-
-  return (
-    <article className={accentClass}>
-      <div className="scalper-chart-head">
-        <div>
-          <span className="summary-label">{title}</span>
-          <h3>{panel?.display_name ?? 'Waiting for data'}</h3>
-        </div>
-        <div className="scalper-chart-price">
-          <strong>{formatPrice(panel?.last_price)}</strong>
-          <small>{panel ? `${panel.exchange} • ${panel.interval}` : 'Historical snapshot'}</small>
-        </div>
-      </div>
-
-      {latest ? (
-        <div className="scalper-ohlc-row">
-          <span>O {formatPrice(latest.open)}</span>
-          <span>H {formatPrice(latest.high)}</span>
-          <span>L {formatPrice(latest.low)}</span>
-          <span>C {formatPrice(latest.close)}</span>
-          <span className={latest.close >= latest.open ? 'tone-positive' : 'tone-negative'}>
-            {previous ? `${latest.close >= previous.close ? '+' : ''}${(latest.close - previous.close).toFixed(2)}` : '--'}
-          </span>
-          <span>Vol {formatCompactVolume(latest.volume)}</span>
-        </div>
-      ) : null}
-
-      <div className="scalper-chart-canvas">
-        {visibleCandles.length === 0 ? (
-          <div className="table-empty">No candles returned yet.</div>
-        ) : (
-          <svg viewBox={`0 0 ${width} ${chartHeight + volumeHeight}`} className="scalper-svg" preserveAspectRatio="none" aria-label={`${title} candle chart`}>
-            {Array.from({ length: 5 }).map((_, index) => {
-              const y = (chartHeight / 4) * index
-              return <line key={`grid-${index}`} x1="0" y1={y} x2={width} y2={y} className="scalper-grid-line" />
-            })}
-            {visibleCandles.map((candle, index) => {
-              const step = width / Math.max(visibleCandles.length, 1)
-              const x = step * index + step / 2
-              const openY = clamp(((maxPrice - candle.open) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const closeY = clamp(((maxPrice - candle.close) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const highY = clamp(((maxPrice - candle.high) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const lowY = clamp(((maxPrice - candle.low) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const bodyY = Math.min(openY, closeY)
-              const bodyHeight = Math.max(Math.abs(closeY - openY), 1.2)
-              const isUp = candle.close >= candle.open
-              const fill = isUp ? '#14b8a6' : '#f43f5e'
-              const volumeBase = chartHeight + volumeHeight
-              const maxVolume = Math.max(...visibleCandles.map((item) => item.volume ?? 0), 1)
-              const volumeHeightValue = ((candle.volume ?? 0) / maxVolume) * (volumeHeight - 6)
-              return (
-                <g key={candle.epoch_ms}>
-                  <line x1={x} y1={highY} x2={x} y2={lowY} className="scalper-wick" stroke={fill} />
-                  <rect x={x - step * 0.28} y={bodyY} width={Math.max(step * 0.56, 0.8)} height={bodyHeight} rx="0.8" fill={fill} />
-                  <rect x={x - step * 0.28} y={volumeBase - volumeHeightValue} width={Math.max(step * 0.56, 0.8)} height={Math.max(volumeHeightValue, 1)} rx="0.8" fill={fill} opacity="0.35" />
-                </g>
-              )
-            })}
-          </svg>
-        )}
-      </div>
-
-      <div className="scalper-chart-foot">
-        <span>Bars: {visibleCandles.length}</span>
-        <span>Last update: {latest?.time_ist ?? '--'}</span>
-      </div>
-    </article>
-  )
 }
 
 function loadStoredSession(): SuccessResponse | null {
@@ -613,18 +383,12 @@ function extractErrorMessage(payload: ApiErrorPayload | null | undefined, fallba
   return fallback
 }
 
-function getSignalTone(signal: string | null): string {
-  if (!signal) return 'neutral'
-  if (signal.includes('BULLISH') || signal.includes('OVERSOLD')) return 'success'
-  if (signal.includes('BEARISH') || signal.includes('OVERBOUGHT')) return 'danger'
-  return 'neutral'
-}
-
-function formatStrategySideMode(mode: StrategySideMode | null | undefined): string {
-  if (mode === 'LONG_ONLY') return 'Long Only'
-  if (mode === 'SHORT_ONLY') return 'Short Only'
-  if (mode === 'BOTH') return 'Both'
-  return '—'
+function formatCompactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
+  if (value >= 1_00_000) return `${(value / 1_00_000).toFixed(2)}L`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toFixed(0)
 }
 
 export default function App() {
@@ -638,30 +402,12 @@ export default function App() {
   const [maskedPhone, setMaskedPhone] = useState('')
   const [message, setMessage] = useState('Enter your phone number, verify the OTP, then confirm MPIN.')
   const [error, setError] = useState('')
-  const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'mpin' | 'no-code' | 'stop' | null>(null)
+  const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'mpin' | null>(null)
   const [session, setSession] = useState<SuccessResponse | null>(() => loadStoredSession())
   const [isSessionChecking, setIsSessionChecking] = useState<boolean>(() => Boolean(loadStoredSession()))
   const [publicIp, setPublicIp] = useState<string>('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
 
-  const [instrument, setInstrument] = useState('')
-  const [interval, setIntervalValue] = useState<Interval>('3m')
-  const [indicator, setIndicator] = useState<Indicator>('EMA')
-  const [emaFast, setEmaFast] = useState('9')
-  const [emaSlow, setEmaSlow] = useState('21')
-  const [maFast, setMaFast] = useState('10')
-  const [maSlow, setMaSlow] = useState('20')
-  const [rsiLength, setRsiLength] = useState('14')
-  const [rsiUpper, setRsiUpper] = useState('70')
-  const [rsiLower, setRsiLower] = useState('30')
-  const [orderQty, setOrderQty] = useState('1')
-  const [orderDeliveryType, setOrderDeliveryType] = useState<OrderDeliveryType>('ORDER_DELIVERY_TYPE_IDAY')
-  const [strategySideMode, setStrategySideMode] = useState<StrategySideMode>('BOTH')
-  const [noCodeStatus, setNoCodeStatus] = useState<NoCodeStatus | null>(null)
-  const [instrumentMeta, setInstrumentMeta] = useState<NoCodeInstrumentMeta | null>(null)
-  const [stockSuggestions, setStockSuggestions] = useState<StockSearchItem[]>([])
-  const [noCodeMessage, setNoCodeMessage] = useState('Configure one instrument and start the IST scheduler.')
-  const [noCodeError, setNoCodeError] = useState('')
   const [volumeBreakoutStatus, setVolumeBreakoutStatus] = useState<VolumeBreakoutStatus | null>(null)
   const [volumeBreakoutMessage, setVolumeBreakoutMessage] = useState(
     'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
@@ -691,41 +437,124 @@ export default function App() {
   const [scalperExpiry, setScalperExpiry] = useState('')
   const [scalperReconnectNonce, setScalperReconnectNonce] = useState(0)
   const [scalperValidating, setScalperValidating] = useState(false)
-  const previousAlertCount = useRef(0)
-
-  const phoneComplete = flowId.length > 0
-  const otpComplete = step === 'mpin' || step === 'success'
-  const mpinComplete = step === 'success'
   const derivedDeviceId = session?.device_id ?? (phone ? `Nubra-OSS-${phone}` : 'Nubra-OSS-<phone>')
 
-  // ── Live scalper hook ─────────────────────────────────────────────────────
-  const parsedScalperStrike = Number(scalperStrikePrice)
+  const [theme, setTheme] = useState<'dark'|'light'>('dark')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+
+  function toggleTheme() { setTheme((t) => t === 'dark' ? 'light' : 'dark') }
+
+  function renderDashboardNav(pageLabel: string) {
+    const initials = (session?.user_name ?? 'N').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase()
+    return (
+      <header className="dash-top">
+        <div className="dash-top-l">
+          <div className="logo">
+            <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={32} height={32} />
+            <span className="wm" style={{ fontSize: 15 }}>NubraOSS</span>
+          </div>
+          <span className="topbar-sep" />
+          <nav className="topbar-nav" aria-label="Primary navigation">
+            {['Dashboard','Scanner','Webhook','Scalper'].map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className={tab === pageLabel ? 'nav-item active' : 'nav-item'}
+                onClick={() => {
+                  if (tab === 'Dashboard') setView('dashboard')
+                  else if (tab === 'Scanner') setView('volume-breakout')
+                  else if (tab === 'Webhook') setView('tradingview-webhook')
+                  else if (tab === 'Scalper') setView('scalper')
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="dash-top-c">
+          <label className="search-bar" aria-label="Search">
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx={11} cy={11} r={6}/><path d="M20 20l-4-4"/></svg>
+            <input placeholder="Search modules, symbols..." />
+            <kbd>⌘K</kbd>
+          </label>
+        </div>
+
+        <div className="dash-top-r">
+          <div className="session-pill">
+            <span className="live-dot" />
+            {session?.environment === 'UAT' ? 'UAT' : 'MARKET OPEN'} / NSE
+          </div>
+          <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+            <span className={`tt-track ${theme}`}>
+              <span className="tt-thumb">
+                {theme === 'dark'
+                  ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/></svg>
+                  : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4}/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></svg>
+                }
+              </span>
+            </span>
+          </button>
+          <div className="profile-menu">
+            <button
+              type="button"
+              className="avatar profile-trigger"
+              onClick={() => setProfileMenuOpen((open) => !open)}
+              aria-expanded={profileMenuOpen}
+              aria-haspopup="menu"
+            >
+              {initials}
+            </button>
+            {profileMenuOpen ? (
+              <div className="profile-popover-v2" role="menu" aria-label="Profile menu">
+                <div>
+                  <strong style={{ fontSize: 14, fontWeight: 500 }}>{session?.user_name ?? 'Nubra User'}</strong>
+                  <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginTop: 2 }}>{session?.account_id ?? 'NUBRA'}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <span className="pill-v2">{session?.broker?.toLowerCase() ?? 'nubra'}</span>
+                  <span className="pill-v2 pill-accent">{session?.environment === 'UAT' ? 'UAT' : 'PROD'}</span>
+                </div>
+                {publicIp ? <div style={{ fontSize: 11, color: 'var(--fg-faint)' }}>IP: {publicIp}</div> : null}
+                <button
+                  type="button"
+                  className="ghost-inline"
+                  style={{ width: '100%', textAlign: 'center' }}
+                  onClick={() => { setProfileMenuOpen(false); resetSession() }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </header>
+    )
+  }
+
   const scalperLive = useScalperLive({
     enabled:
       view === 'scalper' &&
       !!session &&
       !session.is_demo &&
       !scalperValidating &&
-      Number.isFinite(parsedScalperStrike) &&
-      parsedScalperStrike > 0,
+      Number.isFinite(Number(scalperStrikePrice)) &&
+      Number(scalperStrikePrice) > 0,
     session_token: session?.access_token ?? '',
     device_id: derivedDeviceId,
     environment: session?.environment ?? 'PROD',
     underlying: scalperUnderlying,
     exchange: 'NSE',
     interval: scalperInterval,
-    strike_price: parsedScalperStrike || 1,
+    strike_price: Number(scalperStrikePrice) || 1,
     expiry: scalperExpiry.trim() || null,
     lookback_days: 5,
     reconnect_nonce: scalperReconnectNonce,
   })
-
-  const helperText = useMemo(() => {
-    if (step === 'otp') return `OTP sent to ${maskedPhone || 'your number'}.`
-    if (step === 'mpin') return 'OTP verified. Confirm MPIN to enter the product.'
-    if (step === 'success') return 'Authentication complete.'
-    return 'Enter your phone number, verify the OTP, then confirm MPIN.'
-  }, [maskedPhone, step])
 
   function resetSession(reason?: string) {
     setSession(null)
@@ -735,15 +564,10 @@ export default function App() {
     setOtp('')
     setMpin('')
     setMaskedPhone('')
-    setInstrument('')
-    setNoCodeStatus(null)
-    setInstrumentMeta(null)
-    setStockSuggestions([])
     setVolumeBreakoutStatus(null)
     setPublicIp('')
     setProfileMenuOpen(false)
     setIsSessionChecking(false)
-    setNoCodeError('')
     setVolumeBreakoutError('')
     setTradingViewStatus(null)
     setTradingViewError('')
@@ -751,7 +575,7 @@ export default function App() {
     setTradingViewMessage('Configure the webhook once, then paste the generated JSON into TradingView alerts.')
     setError(reason ?? '')
     setMessage(reason ?? 'Enter your phone number, verify the OTP, then confirm MPIN.')
-    fetch(`${API_BASE_URL}/api/no-code/stop`, { method: 'POST' }).catch(() => undefined)
+    fetch(`${API_BASE_URL}/api/strategy/live/stop`, { method: 'POST' }).catch(() => undefined)
     fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
   }
 
@@ -1015,40 +839,6 @@ export default function App() {
   }, [session])
 
   useEffect(() => {
-    if (view !== 'no-code') return
-
-    const fetchStatus = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/no-code/status`)
-        const data = (await response.json()) as NoCodeStatus | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to fetch No Code Algo status.'))
-        }
-        const status = data as NoCodeStatus
-        setNoCodeStatus(status)
-        if (status.last_error) {
-          setNoCodeError(status.last_error)
-        } else {
-          setNoCodeError('')
-        }
-        if (status.alerts.length > previousAlertCount.current) {
-          const latest = status.alerts[0]
-          const alertMessage = `Signal: ${latest.signal} on ${latest.instrument} at ${latest.triggered_at_ist}`
-          setNoCodeMessage(alertMessage)
-          window.alert(alertMessage)
-        }
-        previousAlertCount.current = status.alerts.length
-      } catch (err) {
-        setNoCodeError(err instanceof Error ? err.message : 'Unable to fetch No Code Algo status.')
-      }
-    }
-
-    fetchStatus()
-    const intervalId = window.setInterval(fetchStatus, 5000)
-    return () => window.clearInterval(intervalId)
-  }, [view])
-
-  useEffect(() => {
     if (view !== 'volume-breakout' || !session) return
 
     let cancelled = false
@@ -1117,93 +907,6 @@ export default function App() {
       fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
     }
   }, [view, session, derivedDeviceId])
-
-  useEffect(() => {
-    const lotSize = noCodeStatus?.execution?.instrument_lot_size
-    if (!lotSize || lotSize <= 1) return
-    if (!orderQty || orderQty === '1') {
-      setOrderQty(String(lotSize))
-    }
-  }, [noCodeStatus?.execution?.instrument_lot_size, orderQty])
-
-  useEffect(() => {
-    if (view !== 'no-code' || !session || !instrument.trim()) {
-      setInstrumentMeta(null)
-      return
-    }
-
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/no-code/instrument-meta`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_token: session.access_token,
-            device_id: derivedDeviceId,
-            environment: session.environment,
-            instrument,
-          }),
-          signal: controller.signal,
-        })
-        const data = (await response.json()) as NoCodeInstrumentMeta | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to resolve instrument metadata.'))
-        }
-        const meta = data as NoCodeInstrumentMeta
-        setInstrumentMeta(meta)
-        if (!orderQty || orderQty === '1') {
-          setOrderQty(String(meta.lot_size))
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setInstrumentMeta(null)
-      }
-    }, 350)
-
-    return () => {
-      controller.abort()
-      window.clearTimeout(timeoutId)
-    }
-  }, [view, session, instrument, derivedDeviceId, orderQty])
-
-  useEffect(() => {
-    if (view !== 'no-code' || !session || instrument.trim().length < 1) {
-      setStockSuggestions([])
-      return
-    }
-
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/instruments/stocks/search`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_token: session.access_token,
-            device_id: derivedDeviceId,
-            environment: session.environment,
-            query: instrument,
-            limit: 8,
-          }),
-          signal: controller.signal,
-        })
-        const data = (await response.json()) as { items: StockSearchItem[] } | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to search stocks.'))
-        }
-        setStockSuggestions((data as { items: StockSearchItem[] }).items)
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setStockSuggestions([])
-      }
-    }, 200)
-
-    return () => {
-      controller.abort()
-      window.clearTimeout(timeoutId)
-    }
-  }, [view, session, instrument, derivedDeviceId])
 
   useEffect(() => {
     setScalperStrikePrice(scalperUnderlying === 'BANKNIFTY' ? '56500' : '24300')
@@ -1308,110 +1011,13 @@ export default function App() {
     setError('')
     setProfileMenuOpen(false)
     setMessage(demoSession.message)
-    setNoCodeMessage('Configure one instrument and start the IST scheduler.')
     setVolumeBreakoutMessage(
       'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
     )
   }
 
   function handleDashboardCardOpen(nextView: Extract<View, 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'>) {
-    if (session?.is_demo && nextView !== 'tradingview-webhook' && nextView !== 'scalper') {
-      setMessage('Demo mode is only for reviewing the UI shell. Use a real login to run tools.')
-      return
-    }
     setView(nextView)
-  }
-
-  async function handleNoCodeStart(event: FormEvent) {
-    event.preventDefault()
-    if (!session) return
-
-    setNoCodeError('')
-    setNoCodeMessage('Arming the scheduler...')
-    setActiveAction('no-code')
-
-    try {
-      const payload: Record<string, unknown> = {
-        session_token: session.access_token,
-        device_id: derivedDeviceId,
-        environment: session.environment,
-        instrument,
-        interval,
-        indicator,
-        order_qty: Number(orderQty),
-        order_delivery_type: orderDeliveryType,
-        strategy_side_mode: strategySideMode,
-      }
-
-      if (indicator === 'EMA') {
-        payload.ema = { fast: Number(emaFast), slow: Number(emaSlow) }
-      } else if (indicator === 'MA') {
-        payload.ma = { fast: Number(maFast), slow: Number(maSlow) }
-      } else {
-        payload.rsi = {
-          length: Number(rsiLength),
-          upper: Number(rsiUpper),
-          lower: Number(rsiLower),
-        }
-      }
-
-      const response = await fetch(`${API_BASE_URL}/api/no-code/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-
-      const data = (await response.json()) as NoCodeStartResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data, 'Unable to start No Code Algo.'))
-      }
-
-      const result = data as NoCodeStartResponse
-      setNoCodeStatus(result.job)
-      setNoCodeMessage(result.message)
-      previousAlertCount.current = result.job.alerts.length
-    } catch (err) {
-      setNoCodeError(err instanceof Error ? err.message : 'Unable to start No Code Algo.')
-    } finally {
-      setActiveAction(null)
-    }
-  }
-
-  async function handleNoCodeStop() {
-    setNoCodeError('')
-    setActiveAction('stop')
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/no-code/stop`, {
-        method: 'POST',
-      })
-      const data = (await response.json()) as NoCodeStopResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data, 'Unable to stop No Code Algo.'))
-      }
-      const result = data as NoCodeStopResponse
-      setNoCodeMessage(result.message ?? 'No Code Algo stopped.')
-      setNoCodeStatus({
-        running: false,
-        instrument: null,
-        interval: null,
-        indicator: null,
-        strategy_side_mode: null,
-        last_run_ist: null,
-        next_run_ist: null,
-        market_status: 'stopped',
-        last_signal: null,
-        last_error: null,
-        alerts: [],
-        tracker_rows: [],
-        debug: null,
-        execution: null,
-      })
-      previousAlertCount.current = 0
-    } catch (err) {
-      setNoCodeError(err instanceof Error ? err.message : 'Unable to stop No Code Algo.')
-    } finally {
-      setActiveAction(null)
-    }
   }
 
   async function handleTunnelAction(action: 'start' | 'stop' | 'refresh') {
@@ -1419,162 +1025,86 @@ export default function App() {
     setTunnelAction(action)
     try {
       const endpoint =
-        action === 'start'
-          ? '/api/system/tunnel/start'
-          : action === 'stop'
-            ? '/api/system/tunnel/stop'
-            : '/api/system/tunnel/status'
+        action === 'start' ? '/api/system/tunnel/start' :
+        action === 'stop'  ? '/api/system/tunnel/stop'  : '/api/system/tunnel/status'
       const method = action === 'refresh' ? 'GET' : 'POST'
       const response = await fetch(`${API_BASE_URL}${endpoint}`, { method })
       const data = (await response.json()) as TunnelStatusResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to manage Cloudflare tunnel.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to manage Cloudflare tunnel.'))
       setTunnelStatus(data as TunnelStatusResponse)
     } catch (err) {
       setTunnelStatus((current) => ({
-        running: current?.running ?? false,
-        public_url: current?.public_url ?? null,
+        running: current?.running ?? false, public_url: current?.public_url ?? null,
         target_url: current?.target_url ?? 'http://127.0.0.1:8000',
-        last_error: err instanceof Error ? err.message : 'Unable to manage Cloudflare tunnel.',
-        logs: current?.logs ?? [],
+        last_error: err instanceof Error ? err.message : 'Unable to manage Cloudflare tunnel.', logs: current?.logs ?? [],
       }))
-    } finally {
-      setTunnelAction(null)
-    }
+    } finally { setTunnelAction(null) }
   }
 
   async function handleTradingViewConfigure() {
     if (!session || session.is_demo) return
-    setTradingViewError('')
-    setTradingViewActionState('configure')
+    setTradingViewError(''); setTradingViewActionState('configure')
     try {
       const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/configure`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_token: session.access_token,
-          device_id: derivedDeviceId,
-          environment: session.environment,
-          user_name: session.user_name,
-          account_id: session.account_id,
-          secret: tradingViewSecret.trim() || undefined,
-          order_delivery_type: tradingViewProduct,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_token: session.access_token, device_id: derivedDeviceId, environment: session.environment, user_name: session.user_name, account_id: session.account_id, secret: tradingViewSecret.trim() || undefined, order_delivery_type: tradingViewProduct }),
       })
       const data = (await response.json()) as TradingViewWebhookConfigureResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to configure TradingView webhook.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to configure TradingView webhook.'))
       const result = data as TradingViewWebhookConfigureResponse
-      setTradingViewStatus(result.config)
-      setTradingViewSecret(result.config.secret ?? '')
-      setTradingViewProduct(result.config.order_delivery_type ?? tradingViewProduct)
-      setTradingViewMessage(result.message)
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to configure TradingView webhook.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewStatus(result.config); setTradingViewSecret(result.config.secret ?? '')
+      setTradingViewProduct(result.config.order_delivery_type ?? tradingViewProduct); setTradingViewMessage(result.message)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to configure TradingView webhook.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function handleTradingViewReset() {
-    setTradingViewError('')
-    setTradingViewActionState('reset')
+    setTradingViewError(''); setTradingViewActionState('reset')
     try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/reset`, {
-        method: 'POST',
-      })
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/reset`, { method: 'POST' })
       const data = (await response.json()) as TradingViewWebhookResetResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to reset TradingView webhook.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to reset TradingView webhook.'))
       const result = data as TradingViewWebhookResetResponse
-      setTradingViewStatus({
-        configured: false,
-        environment: session?.environment ?? null,
-        broker: session?.broker ?? null,
-        user_name: session?.user_name ?? null,
-        account_id: session?.account_id ?? null,
-        configured_at_utc: null,
-        order_delivery_type: tradingViewProduct,
-        secret: null,
-        has_secret: false,
-        webhook_path: '/api/webhooks/tradingview',
-        webhook_url: tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : null,
-        strategy_template: {},
-        line_alert_template: {},
-        execution_enabled: true,
-        last_error: null,
-        logs: [],
-        history: [],
-        summary: {
-          total_events: 0,
-          live_events: 0,
-          test_events: 0,
-          blocked_events: 0,
-          error_events: 0,
-          accepted_events: 0,
-          today_pnl: 0,
-          today_orders: 0,
-        },
-        order_history: [],
-        positions: [],
-        pnl_summary: {
-          realized_pnl: 0,
-          unrealized_pnl: 0,
-          total_pnl: 0,
-          open_positions: 0,
-          closed_groups: 0,
-        },
-      })
-      setTradingViewSecret('')
-      setTradingViewMessage(result.message)
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to reset TradingView webhook.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewStatus({ configured: false, environment: session?.environment ?? null, broker: session?.broker ?? null, user_name: session?.user_name ?? null, account_id: session?.account_id ?? null, configured_at_utc: null, order_delivery_type: tradingViewProduct, secret: null, has_secret: false, webhook_path: '/api/webhooks/tradingview', webhook_url: tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : null, strategy_template: {}, line_alert_template: {}, execution_enabled: true, last_error: null, logs: [], history: [], summary: { total_events: 0, live_events: 0, test_events: 0, blocked_events: 0, error_events: 0, accepted_events: 0, today_pnl: 0, today_orders: 0 }, order_history: [], positions: [], pnl_summary: { realized_pnl: 0, unrealized_pnl: 0, total_pnl: 0, open_positions: 0, closed_groups: 0 } })
+      setTradingViewSecret(''); setTradingViewMessage(result.message)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to reset TradingView webhook.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function handleTradingViewKillSwitch(enabled: boolean) {
-    setTradingViewError('')
-    setTradingViewActionState(enabled ? 'configure' : 'reset')
+    setTradingViewError(''); setTradingViewActionState(enabled ? 'configure' : 'reset')
     try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/execution-mode`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ execution_enabled: enabled }),
-      })
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/execution-mode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ execution_enabled: enabled }) })
       const data = (await response.json()) as TradingViewWebhookExecutionModeResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to update webhook execution mode.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to update webhook execution mode.'))
       setTradingViewStatus((current) => (current ? { ...current, execution_enabled: enabled } : current))
       setTradingViewMessage(enabled ? 'Webhook execution enabled.' : 'Kill switch enabled. Incoming webhook orders will be blocked.')
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to update webhook execution mode.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to update webhook execution mode.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function copyToClipboard(value: string, kind: 'copy-url' | 'copy-strategy' | 'copy-line') {
     setTradingViewActionState(kind)
     try {
       await navigator.clipboard.writeText(value)
-      setTradingViewMessage(
-        kind === 'copy-url'
-          ? 'Webhook URL copied.'
-          : kind === 'copy-strategy'
-            ? 'Strategy JSON copied.'
-            : 'Line alert JSON copied.',
-      )
-    } catch {
-      setTradingViewError('Unable to copy to clipboard.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewMessage(kind === 'copy-url' ? 'Webhook URL copied.' : kind === 'copy-strategy' ? 'Strategy JSON copied.' : 'Line alert JSON copied.')
+    } catch { setTradingViewError('Unable to copy to clipboard.')
+    } finally { setTradingViewActionState(null) }
+  }
+
+  async function handleTradingViewTest() {
+    if (!session || session.is_demo) return
+    setTradingViewError(''); setTradingViewActionState('test')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' }, body: JSON.stringify(tradingViewLinePayload) })
+      const data = (await response.json()) as Record<string, unknown> | ApiErrorPayload
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to send test webhook payload.'))
+      setTradingViewMessage('Test payload sent. Check webhook activity below for capture and order result.')
+      const statusResponse = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
+      const statusData = (await statusResponse.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
+      if (statusResponse.ok) setTradingViewStatus(statusData as TradingViewWebhookStatusResponse)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to send test webhook payload.')
+    } finally { setTradingViewActionState(null) }
   }
 
   function formatPercent(value: number | null | undefined): string {
@@ -1582,1503 +1112,608 @@ export default function App() {
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
   }
 
-  function formatCompactNumber(value: number | null | undefined): string {
-    if (value === null || value === undefined || Number.isNaN(value)) return '-'
-    if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
-    if (value >= 1_00_000) return `${(value / 1_00_000).toFixed(2)}L`
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
-    return value.toFixed(0)
-  }
-
-  const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
+  // ── Computed values ─────────────────────────────────────────────────────────
   const resolvedTradingViewSecret = tradingViewStatus?.secret ?? tradingViewSecret
   const resolvedTradingViewProduct = tradingViewProduct
-  const tradingViewStrategyPayload = {
-    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
-    strategy: tradingViewStrategyName || 'Nubra Strategy Alert',
-    instrument: tradingViewSymbol || 'RELIANCE',
-    exchange: tradingViewExchange || 'NSE',
-    order_side: '{{strategy.order.action}}',
-    order_delivery_type: resolvedTradingViewProduct,
-    price_type: 'MARKET',
-    order_qty: '{{strategy.order.contracts}}',
-    position_size: '{{strategy.position_size}}',
-    tag: tradingViewTag || undefined,
-  }
-  const tradingViewLinePayload = {
-    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
-    strategy: tradingViewStrategyName || 'Nubra Line Alert',
-    instrument: tradingViewSymbol || 'RELIANCE',
-    exchange: tradingViewExchange || 'NSE',
-    order_side: tradingViewOrderAction,
-    order_delivery_type: resolvedTradingViewProduct,
-    price_type: 'MARKET',
-    order_qty: Number(tradingViewQuantity || '1'),
-    tag: tradingViewTag || undefined,
-  }
+  const tradingViewStrategyPayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Strategy Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: '{{strategy.order.action}}', order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: '{{strategy.order.contracts}}', position_size: '{{strategy.position_size}}', tag: tradingViewTag || undefined }
+  const tradingViewLinePayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Line Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: tradingViewOrderAction, order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: Number(tradingViewQuantity || '1'), tag: tradingViewTag || undefined }
   const tradingViewStrategyJson = JSON.stringify(tradingViewStrategyPayload, null, 2)
   const tradingViewLineJson = JSON.stringify(tradingViewLinePayload, null, 2)
-  const filteredHistory = (tradingViewStatus?.history ?? []).filter((entry) =>
-    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
-  )
-  const filteredOrderHistory = (tradingViewStatus?.order_history ?? []).filter((entry) =>
-    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
-  )
-  const filteredPositions = (tradingViewStatus?.positions ?? []).filter((position) => {
+  const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
+  const filteredHistory = (tradingViewStatus?.history ?? []).filter((e) => historySourceFilter === 'all' ? true : e.source === historySourceFilter)
+  const filteredOrderHistory = (tradingViewStatus?.order_history ?? []).filter((e) => historySourceFilter === 'all' ? true : e.source === historySourceFilter)
+  const filteredPositions = (tradingViewStatus?.positions ?? []).filter((p) => {
     if (historySourceFilter === 'all') return true
-    const matchingTrade = filteredOrderHistory.find(
-      (entry) =>
-        (entry.strategy ?? null) === (position.strategy ?? null) &&
-        (entry.tag ?? null) === (position.tag ?? null) &&
-        entry.instrument === position.instrument &&
-        entry.exchange === position.exchange,
-    )
-    return Boolean(matchingTrade)
+    return Boolean(filteredOrderHistory.find((e) => (e.strategy ?? null) === (p.strategy ?? null) && (e.tag ?? null) === (p.tag ?? null) && e.instrument === p.instrument && e.exchange === p.exchange))
   })
   const webhookConfigured = Boolean(tradingViewStatus?.configured)
   const tunnelReady = Boolean(tunnelStatus?.public_url)
-  const hasTestHistory = (tradingViewStatus?.history ?? []).some((entry) => entry.source === 'test')
+  const hasTestHistory = (tradingViewStatus?.history ?? []).some((e) => e.source === 'test')
   const executionEnabled = tradingViewStatus?.execution_enabled !== false
-  const nextWebhookAction = !webhookConfigured
-    ? 'Step 1: save your webhook secret and default product.'
-    : !tunnelReady
-      ? 'Step 2: generate the public webhook URL.'
-      : !hasTestHistory
-        ? 'Step 4: send a test payload before going live.'
-        : !executionEnabled
-          ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.'
-          : 'Setup complete. Copy the live URL and payload into TradingView.'
+  const nextWebhookAction = !webhookConfigured ? 'Step 1: save your webhook secret and default product.' : !tunnelReady ? 'Step 2: generate the public webhook URL.' : !hasTestHistory ? 'Step 4: send a test payload before going live.' : !executionEnabled ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.' : 'Setup complete. Copy the live URL and payload into TradingView.'
 
-  async function handleTradingViewTest() {
-    if (!session || session.is_demo) return
-    setTradingViewError('')
-    setTradingViewActionState('test')
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' },
-        body: JSON.stringify(tradingViewLinePayload),
-      })
-      const data = (await response.json()) as Record<string, unknown> | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to send test webhook payload.'))
-      }
-      setTradingViewMessage('Test payload sent. Check webhook activity below for capture and order result.')
-      const statusResponse = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
-      const statusData = (await statusResponse.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
-      if (statusResponse.ok) {
-        setTradingViewStatus(statusData as TradingViewWebhookStatusResponse)
-      }
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to send test webhook payload.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+  // ── Scalper local vars ────────────────────────────────────────────────────
+  const { status: liveStatus, error: liveError, connected: liveConnected, optionPair, panelMeta, registerPanel } = scalperLive
+  const scalperFeedLabel = scalperValidating ? 'Checking Session' : liveConnected ? 'Live Connected' : liveError ? 'Feed Error' : 'Connecting'
+  const scalperFeedTone = scalperValidating ? '#f59e0b' : liveConnected ? '#22c55e' : liveError ? '#ef4444' : '#64748b'
+  const underlyingMeta = panelMeta?.underlying ?? null
+  const callMeta = panelMeta?.call_option ?? null
+  const putMeta = panelMeta?.put_option ?? null
+
+  // ── OTP/MPIN cell state ──────────────────────────────────────────────────
+  const otpCells = useRef<(HTMLInputElement | null)[]>([])
+  const mpinCells = useRef<(HTMLInputElement | null)[]>([])
+  const [otpDigits, setOtpDigits] = useState(['','','','','',''])
+  const [mpinDigits, setMpinDigits] = useState(['','','',''])
+
+  function handleOtpCell(index: number, value: string) {
+    if (!/^\d?$/.test(value)) return
+    const next = [...otpDigits]; next[index] = value; setOtpDigits(next); setOtp(next.join(''))
+    if (value && index < 5) otpCells.current[index + 1]?.focus()
+  }
+  function handleMpinCell(index: number, value: string) {
+    if (!/^\d?$/.test(value)) return
+    const next = [...mpinDigits]; next[index] = value; setMpinDigits(next); setMpin(next.join(''))
+    if (value && index < 3) mpinCells.current[index + 1]?.focus()
   }
 
-  function renderDashboardNav(activeTab: string) {
-    return (
-      <section className="dashboard-topbar">
-        <header className="dashboard-nav">
-          <div className="dashboard-brand">
-            <img src={nubraLogo} alt="Nubra" className="brand-logo dashboard-brand-logo" />
-            <div className="dashboard-brand-copy">
-              <span>NubraOSS</span>
-              <small>Trading workspace</small>
-            </div>
-          </div>
+  const phoneComplete = flowId.length > 0
+  const otpComplete = step === 'mpin' || step === 'success'
+  const mpinComplete = step === 'success'
+  const currentStep = step === 'start' ? 0 : step === 'otp' ? 1 : 2
 
-          <nav className="dashboard-tabs" aria-label="Primary">
-            {dashboardTabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                className={tab === activeTab ? 'dashboard-tab active' : 'dashboard-tab'}
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
-
-          <div className="dashboard-actions">
-            <div className="profile-menu">
-              <button
-                type="button"
-                className="avatar-pill profile-trigger"
-                onClick={() => setProfileMenuOpen((open) => !open)}
-                aria-expanded={profileMenuOpen}
-                aria-haspopup="menu"
-              >
-                {session?.user_name?.[0] ?? 'N'}
-              </button>
-              {profileMenuOpen ? (
-                <div className="profile-popover" role="menu" aria-label="Profile menu">
-                  <div className="profile-popover-header">
-                    <strong>{session?.user_name ?? 'Nubra User'}</strong>
-                    <span>{session?.account_id ?? 'NUBRA'}</span>
-                  </div>
-                  <div className="profile-meta">
-                    <span className="pill">{session?.broker.toLowerCase() ?? 'nubra'}</span>
-                    <span className="pill pill-dark">
-                      {session?.environment === 'UAT' ? 'UAT Mode' : 'Live Mode'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary-button profile-logout"
-                    onClick={() => resetSession()}
-                  >
-                    Logout
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </header>
-
-        <div className="dashboard-meta-row">
-          <div className="dashboard-meta-spacer" />
-          <div className="public-ip-card">
-            <span className="public-ip-label">Public IP</span>
-              <strong>{publicIp || 'Loading...'}</strong>
-            </div>
-          </div>
-      </section>
-    )
-  }
-
+  // ── Routing ──────────────────────────────────────────────────────────────
   if (view === 'no-code') {
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Tools')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>No Code Algo</h1>
-              <p>Run one intraday historical-data strategy on exact IST interval boundaries.</p>
-            </div>
-            <div className="header-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={handleNoCodeStop}
-                disabled={activeAction !== null || !noCodeStatus?.running}
-              >
-                {activeAction === 'stop' ? 'Stopping...' : 'Stop'}
-              </button>
-            </div>
-          </section>
-
-          <section className="no-code-grid">
-            <form className="dashboard-module-card no-code-config-card" onSubmit={handleNoCodeStart}>
-              <h2>Strategy Setup</h2>
-              <p className="module-subtitle">
-                Uses today&apos;s intraday historical candles only and ignores the current incomplete candle.
-              </p>
-
-              <label className="field-group">
-                <span>Instrument</span>
-                <input
-                  list="stock-suggestions"
-                  value={instrument}
-                  onChange={(event) => setInstrument(event.target.value.toUpperCase())}
-                  placeholder="Type a stock, e.g. RELIANCE"
-                  required
-                />
-                <datalist id="stock-suggestions">
-                  {stockSuggestions.map((item) => (
-                    <option key={`${item.exchange}-${item.ref_id}`} value={item.instrument}>
-                      {item.display_name} ({item.exchange})
-                    </option>
-                  ))}
-                </datalist>
-              </label>
-
-              <label className="field-group">
-                <span>Interval</span>
-                <select value={interval} onChange={(event) => setIntervalValue(event.target.value as Interval)}>
-                  {intervals.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="param-grid">
-                <label className="field-group">
-                  <span>Order Qty</span>
-                  <input value={orderQty} onChange={(e) => setOrderQty(e.target.value.replace(/\D/g, ''))} />
-                </label>
-                <label className="field-group">
-                  <span>Product</span>
-                  <select
-                    value={orderDeliveryType}
-                    onChange={(event) => setOrderDeliveryType(event.target.value as OrderDeliveryType)}
-                  >
-                    <option value="ORDER_DELIVERY_TYPE_IDAY">Intraday</option>
-                    <option value="ORDER_DELIVERY_TYPE_CNC">CNC</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="field-group">
-                <span>Indicator</span>
-                <div className="indicator-grid">
-                  {(['EMA', 'MA', 'RSI'] as Indicator[]).map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className={indicator === item ? 'indicator-box active' : 'indicator-box'}
-                      onClick={() => setIndicator(item)}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="field-group">
-                <span>Strategy Side</span>
-                <div className="indicator-grid strategy-mode-grid">
-                  <button
-                    type="button"
-                    className={strategySideMode === 'LONG_ONLY' ? 'indicator-box active mode-long' : 'indicator-box mode-long'}
-                    aria-pressed={strategySideMode === 'LONG_ONLY'}
-                    onClick={() => setStrategySideMode('LONG_ONLY')}
-                  >
-                    Long Only
-                  </button>
-                  <button
-                    type="button"
-                    className={strategySideMode === 'SHORT_ONLY' ? 'indicator-box active mode-short' : 'indicator-box mode-short'}
-                    aria-pressed={strategySideMode === 'SHORT_ONLY'}
-                    onClick={() => setStrategySideMode('SHORT_ONLY')}
-                  >
-                    Short Only
-                  </button>
-                  <button
-                    type="button"
-                    className={strategySideMode === 'BOTH' ? 'indicator-box active mode-both' : 'indicator-box mode-both'}
-                    aria-pressed={strategySideMode === 'BOTH'}
-                    onClick={() => setStrategySideMode('BOTH')}
-                  >
-                    Both
-                  </button>
-                </div>
-              </div>
-
-              {indicator === 'EMA' && (
-                <div className="param-grid">
-                  <label className="field-group">
-                    <span>Fast EMA</span>
-                    <input value={emaFast} onChange={(e) => setEmaFast(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Slow EMA</span>
-                    <input value={emaSlow} onChange={(e) => setEmaSlow(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              {indicator === 'MA' && (
-                <div className="param-grid">
-                  <label className="field-group">
-                    <span>Fast MA</span>
-                    <input value={maFast} onChange={(e) => setMaFast(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Slow MA</span>
-                    <input value={maSlow} onChange={(e) => setMaSlow(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              {indicator === 'RSI' && (
-                <div className="param-grid param-grid-three">
-                  <label className="field-group">
-                    <span>RSI Length</span>
-                    <input value={rsiLength} onChange={(e) => setRsiLength(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Upper RSI</span>
-                    <input value={rsiUpper} onChange={(e) => setRsiUpper(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Lower RSI</span>
-                    <input value={rsiLower} onChange={(e) => setRsiLower(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              <button className="primary-button wide-button" type="submit" disabled={activeAction !== null || !session}>
-                {activeAction === 'no-code' ? 'Starting...' : 'Start No Code Algo'}
-              </button>
-            </form>
-
-            <section className="status-column">
-              <article className="dashboard-module-card">
-                <h2>Runner Status</h2>
-                <div className="status-list">
-                  <div><span>Status</span><strong>{noCodeStatus?.running ? 'Running' : 'Stopped'}</strong></div>
-                  <div><span>Market</span><strong>{noCodeStatus?.market_status ?? 'idle'}</strong></div>
-                  <div><span>Instrument</span><strong>{noCodeStatus?.instrument ?? 'â€”'}</strong></div>
-                  <div><span>Interval</span><strong>{noCodeStatus?.interval ?? 'â€”'}</strong></div>
-                  <div><span>Indicator</span><strong>{noCodeStatus?.indicator ?? 'â€”'}</strong></div>
-                  <div><span>Strategy Side</span><strong>{formatStrategySideMode(noCodeStatus?.strategy_side_mode)}</strong></div>
-                  <div><span>Last Run</span><strong>{noCodeStatus?.last_run_ist ?? 'â€”'}</strong></div>
-                  <div><span>Next Run</span><strong>{noCodeStatus?.next_run_ist ?? 'â€”'}</strong></div>
-                </div>
-              </article>
-
-              <article className="dashboard-module-card tracker-card">
-                <h2>Positions Tracker</h2>
-                <div className="tracker-table">
-                  <div className="tracker-row tracker-head">
-                    <span>Alert</span>
-                    <span>Side</span>
-                    <span>Position</span>
-                    <span>Time</span>
-                  </div>
-                  {(noCodeStatus?.tracker_rows ?? []).length === 0 ? (
-                    <div className="tracker-empty">No position events yet.</div>
-                  ) : (
-                    (noCodeStatus?.tracker_rows ?? []).map((row, index) => (
-                      <div key={`${row.time_ist}-${index}`} className="tracker-row">
-                        <span>{row.alert}</span>
-                        <span>{row.side}</span>
-                        <span>{row.position_state}</span>
-                        <span>{row.time_ist}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </article>
-            </section>
-          </section>
-
-          {noCodeError ? <section className="error-banner dashboard-error">{noCodeError}</section> : null}
-
-        </section>
-      </main>
+      <StrategyBuilder
+        apiBaseUrl={API_BASE_URL}
+        sessionToken={session?.access_token ?? ''}
+        deviceId={derivedDeviceId}
+        environment={session?.environment ?? 'PROD'}
+        onBack={() => setView('dashboard')}
+      />
     )
   }
 
   if (view === 'volume-breakout') {
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Scanner')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>Volume Breakout</h1>
-              <p>DB-backed stock breakout board built from stored 1-minute history for the tracked universe.</p>
+      <div className="subview-shell">
+        {renderDashboardNav('Scanner')}
+        <main className="subview-main">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button className="ghost-inline" onClick={() => setView('dashboard')}>← Dashboard</button>
+            <span className="builder-crumb-sep">/</span>
+            <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>Volume Breakout</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <span className="pill-v2">{volumeBreakoutStatus?.interval ?? '5m'} / {volumeBreakoutStatus?.refresh_seconds ?? 30}s</span>
+              <span className="pill-v2">Live: {volumeBreakoutStatus?.live_status ?? 'idle'}</span>
             </div>
-            <div className="header-actions">
-              <span className="pill">
-                {volumeBreakoutStatus?.interval ?? '5m'} / {volumeBreakoutStatus?.refresh_seconds ?? 30}s
-              </span>
-              <span className="pill">
-                Live: {volumeBreakoutStatus?.live_status ?? 'idle'}
-              </span>
-            </div>
-          </section>
+          </div>
 
-          <section className="volume-summary-grid">
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Universe</span>
-              <strong>{volumeBreakoutStatus?.summary.tracked_stocks ?? 0}</strong>
-              <small>Tracked stocks loaded from Supabase.</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Active Breakouts</span>
-              <strong>{volumeBreakoutStatus?.summary.active_breakouts ?? 0}</strong>
-              <small>Stocks above the current volume-ratio threshold.</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Latest Candle</span>
-              <strong>{volumeBreakoutStatus?.summary.latest_candle_ist ? 'Ready' : 'Pending'}</strong>
-              <small>{volumeBreakoutStatus?.summary.latest_candle_ist ?? 'Waiting for stored bars.'}</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Price Confirmation</span>
-              <strong>{volumeBreakoutStatus?.summary.leaders_with_price_breakout ?? 0}</strong>
-              <small>Breakouts also trading above prior lookback highs.</small>
-            </article>
-          </section>
-
-          <section className="dashboard-info-card volume-meta-card">
-            <div>
-              <strong>Scanner Mode</strong>
-              <p>{volumeBreakoutMessage}</p>
+          <div className="summary-grid">
+            <div className="summary-card"><span className="summary-label">Universe</span><strong>{volumeBreakoutStatus?.summary.tracked_stocks ?? 0}</strong><small>Tracked stocks</small></div>
+            <div className="summary-card"><span className="summary-label">Active Breakouts</span><strong>{volumeBreakoutStatus?.summary.active_breakouts ?? 0}</strong><small>Above threshold</small></div>
+            <div className="summary-card"><span className="summary-label">Latest Candle</span><strong>{volumeBreakoutStatus?.summary.latest_candle_ist ? 'Ready' : 'Pending'}</strong><small>{volumeBreakoutStatus?.summary.latest_candle_ist ?? 'Waiting...'}</small></div>
+            <div className="summary-card"><span className="summary-label">Price Confirmed</span><strong>{volumeBreakoutStatus?.summary.leaders_with_price_breakout ?? 0}</strong><small>Above lookback high</small></div>
+          </div>
+          <div className="msg-banner" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div><strong style={{ display: 'block', marginBottom: 4 }}>Scanner Mode</strong>{volumeBreakoutMessage}</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+              <span className="pill-v2">WS: {volumeBreakoutStatus?.live_subscribed_symbols ?? 0}</span>
+              <span className="pill-v2">Last: {volumeBreakoutStatus?.last_run_ist ?? 'Waiting...'}</span>
             </div>
-            <div className="volume-meta-stack">
-              <span className="pill">
-                WS symbols: {volumeBreakoutStatus?.live_subscribed_symbols ?? 0}
-              </span>
-              <span className="pill">
-                Last live event: {volumeBreakoutStatus?.live_last_event_ist ?? 'Waiting...'}
-              </span>
-              <span className="pill">Last run: {volumeBreakoutStatus?.last_run_ist ?? 'Waiting...'}</span>
-              <span className="pill">Next run: {volumeBreakoutStatus?.next_run_ist ?? 'Waiting...'}</span>
-            </div>
-          </section>
+          </div>
 
-          <section className="volume-breakout-grid">
-            <article className="dashboard-module-card volume-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Market Rankers</h2>
-                  <p>Highest volume-ratio names computed from stored 1-minute history.</p>
-                </div>
-              </div>
+          <div className="volume-breakout-grid">
+            <div className="sb-card">
+              <div className="sb-card-head"><div><span className="sb-card-kicker">Market Rankers</span><h3>Top Volume Ratio</h3></div></div>
               <div className="table-shell">
-                <div className="table-row table-head volume-stock-grid">
-                  <span>Stock</span>
-                  <span>Exchange</span>
-                  <span>Ratio</span>
-                  <span>Volume</span>
-                  <span>Price</span>
-                </div>
+                <div className="table-row table-head volume-stock-grid"><span>Stock</span><span>Exchange</span><span>Ratio</span><span>Volume</span><span>Price</span></div>
                 {(volumeBreakoutStatus?.market_breakouts ?? []).length === 0 ? (
                   <div className="table-empty">No market-wide leaders available yet.</div>
                 ) : (
                   (volumeBreakoutStatus?.market_breakouts ?? []).map((row) => (
                     <div key={`${row.symbol}-${row.candle_time_ist}`} className="table-row volume-stock-grid">
-                      <span>
-                        <strong>{row.symbol}</strong>
-                        <small>{row.display_name}</small>
-                      </span>
+                      <span><strong>{row.symbol}</strong><small>{row.display_name}</small></span>
                       <span>{row.exchange}</span>
-                      <span className={row.meets_breakout ? 'text-success' : 'text-muted'}>
-                        {row.volume_ratio.toFixed(2)}x
-                      </span>
+                      <span className={row.meets_breakout ? 'text-success' : 'text-muted'}>{row.volume_ratio.toFixed(2)}x</span>
                       <span>{formatCompactNumber(row.current_volume)}</span>
-                      <span className={row.is_green ? 'text-success' : 'text-danger'}>
-                        {row.last_price.toFixed(2)}
-                      </span>
+                      <span className={row.is_green ? 'text-success' : 'text-danger'}>{row.last_price.toFixed(2)}</span>
                     </div>
                   ))
                 )}
               </div>
-            </article>
-          </section>
+            </div>
 
-          <article className="dashboard-module-card volume-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Fresh Entrants</h2>
-                <p>New names that entered the breakout list on the latest completed candle.</p>
+            <div className="sb-card">
+              <div className="sb-card-head"><div><span className="sb-card-kicker">Fresh Entrants</span><h3>Latest Candle Breakouts</h3></div></div>
+              <div className="table-shell">
+                <div className="table-row table-head volume-recent-grid"><span>Stock</span><span>Exchange</span><span>Time</span><span>Ratio</span><span>Price Breakout</span></div>
+                {(volumeBreakoutStatus?.recent_breakouts ?? []).length === 0 ? (
+                  <div className="table-empty">No fresh entrants yet.</div>
+                ) : (
+                  (volumeBreakoutStatus?.recent_breakouts ?? []).map((row) => (
+                    <div key={`recent-${row.symbol}-${row.candle_time_ist}`} className="table-row volume-recent-grid">
+                      <span>{row.symbol}</span><span>{row.exchange}</span><span>{row.candle_time_ist}</span>
+                      <span>{row.volume_ratio.toFixed(2)}x</span>
+                      <span className={row.is_price_breakout ? 'text-success' : 'text-muted'}>{row.is_price_breakout ? formatPercent(row.price_breakout_pct) : 'Not yet'}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-            <div className="table-shell">
-              <div className="table-row table-head volume-recent-grid">
-                <span>Stock</span>
-                <span>Exchange</span>
-                <span>Time</span>
-                <span>Ratio</span>
-                <span>Price Breakout</span>
-              </div>
-              {(volumeBreakoutStatus?.recent_breakouts ?? []).length === 0 ? (
-                <div className="table-empty">No fresh entrants yet. The next completed run will populate this feed.</div>
-              ) : (
-                (volumeBreakoutStatus?.recent_breakouts ?? []).map((row) => (
-                  <div key={`recent-${row.symbol}-${row.candle_time_ist}`} className="table-row volume-recent-grid">
-                    <span>{row.symbol}</span>
-                    <span>{row.exchange}</span>
-                    <span>{row.candle_time_ist}</span>
-                    <span>{row.volume_ratio.toFixed(2)}x</span>
-                    <span className={row.is_price_breakout ? 'text-success' : 'text-muted'}>
-                      {row.is_price_breakout ? formatPercent(row.price_breakout_pct) : 'Not yet'}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
+          </div>
 
-          {volumeBreakoutError ? <section className="error-banner dashboard-error">{volumeBreakoutError}</section> : null}
-        </section>
-      </main>
+          {volumeBreakoutError ? <div className="err-banner">{volumeBreakoutError}</div> : null}
+        </main>
+      </div>
     )
   }
 
   if (view === 'tradingview-webhook') {
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('TradingView')}
+      <div className="subview-shell">
+        {renderDashboardNav('Webhook')}
+        <main className="subview-main">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button className="ghost-inline" onClick={() => setView('dashboard')}>← Dashboard</button>
+            <span className="builder-crumb-sep">/</span>
+            <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>TradingView Webhook</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <span className={`pill-v2 ${webhookConfigured ? 'pill-success' : ''}`}>{webhookConfigured ? 'Configured' : 'Not configured'}</span>
+              <span className="pill-v2">{tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'Intraday' : 'CNC'}</span>
+              <span className={`pill-v2 ${executionEnabled ? 'pill-success' : 'pill-danger'}`}>{executionEnabled ? 'Execution On' : 'Kill Switch On'}</span>
+            </div>
+          </div>
 
-          <section className="dashboard-header no-code-header">
+          <div className="msg-banner" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 24 }}>
             <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>TradingView Webhook</h1>
-              <p>Configure the Nubra webhook, copy either the manual or strategy alert JSON, and monitor incoming TradingView executions.</p>
+              <strong style={{ display: 'block', marginBottom: 4 }}>Next Step</strong>
+              <p style={{ fontSize: 13, color: 'var(--fg-dim)' }}>{nextWebhookAction}</p>
             </div>
-            <div className="header-actions">
-              <span className="pill">
-                {tradingViewStatus?.configured ? 'Configured' : 'Not configured'}
-              </span>
-              <span className="pill">
-                {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'Intraday' : 'CNC'}
-              </span>
-              <span className={tradingViewStatus?.execution_enabled === false ? 'pill pill-danger' : 'pill pill-success'}>
-                {tradingViewStatus?.execution_enabled === false ? 'Kill Switch On' : 'Execution On'}
-              </span>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              <span className={`pill-v2 ${webhookConfigured ? 'pill-success' : ''}`}>1. Config {webhookConfigured ? '✓' : 'Pending'}</span>
+              <span className={`pill-v2 ${tunnelReady ? 'pill-success' : ''}`}>2. URL {tunnelReady ? '✓' : 'Pending'}</span>
+              <span className={`pill-v2 ${hasTestHistory ? 'pill-success' : ''}`}>3. Test {hasTestHistory ? '✓' : 'Pending'}</span>
+              <span className={`pill-v2 ${executionEnabled ? 'pill-success' : 'pill-danger'}`}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
             </div>
-          </section>
+          </div>
 
-          <section className="dashboard-info-card webhook-guide-banner">
-            <div>
-              <strong>Next Step</strong>
-              <p>{nextWebhookAction}</p>
-            </div>
-            <div className="history-meta-row">
-              <span className={webhookConfigured ? 'pill pill-success' : 'pill'}>1. Config {webhookConfigured ? 'Done' : 'Pending'}</span>
-              <span className={tunnelReady ? 'pill pill-success' : 'pill'}>2. URL {tunnelReady ? 'Done' : 'Pending'}</span>
-              <span className={hasTestHistory ? 'pill pill-success' : 'pill'}>3. Test {hasTestHistory ? 'Done' : 'Pending'}</span>
-              <span className={executionEnabled ? 'pill pill-success' : 'pill pill-danger'}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
-            </div>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={webhookConfigured ? 'step-badge done' : 'step-badge'}>1</span>
-              <div>
-                <h2>Set Up Webhook Access</h2>
-                <p>Create the private secret and execution defaults that every TradingView alert will use.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card webhook-config-card">
-              <h2>Access & Execution Settings</h2>
-              <p className="module-subtitle">
-                Define the shared webhook secret and choose the default order product type for incoming TradingView alerts.
-              </p>
-
-              <label className="field-group">
-                <span>Webhook Secret</span>
-                <input
-                  value={tradingViewSecret}
-                  onChange={(event) => setTradingViewSecret(event.target.value)}
-                  placeholder="Auto-generated if left blank"
-                />
-              </label>
-
-              <label className="field-group">
-                <span>Default Product</span>
-                <select
-                  value={tradingViewProduct}
-                  onChange={(event) => setTradingViewProduct(event.target.value as OrderDeliveryType)}
-                >
-                  <option value="ORDER_DELIVERY_TYPE_IDAY">Intraday (MIS)</option>
-                  <option value="ORDER_DELIVERY_TYPE_CNC">Delivery (CNC)</option>
-                </select>
-              </label>
-
-              <div className="kill-switch-card">
-                <div>
-                  <strong>Order Execution Control</strong>
-                  <p className="module-subtitle">
-                    Pause live order placement instantly while continuing to capture webhook requests in the activity log.
-                  </p>
-                </div>
-                <div className="kill-switch-actions">
-                  <button
-                    type="button"
-                    className={tradingViewStatus?.execution_enabled === false ? 'secondary-button' : 'primary-button'}
-                    onClick={() => handleTradingViewKillSwitch(true)}
-                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                  >
-                    Allow Orders
-                  </button>
-                  <button
-                    type="button"
-                    className={tradingViewStatus?.execution_enabled === false ? 'primary-button' : 'secondary-button'}
-                    onClick={() => handleTradingViewKillSwitch(false)}
-                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                  >
-                    Pause Orders
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="primary-button wide-button"
-                onClick={handleTradingViewConfigure}
-                disabled={!session || Boolean(session?.is_demo) || tradingViewActionState !== null}
-              >
-                {tradingViewActionState === 'configure' ? 'Saving...' : 'Save Webhook Settings'}
-              </button>
-              <button
-                type="button"
-                className="secondary-button wide-button"
-                onClick={handleTradingViewReset}
-                disabled={tradingViewActionState !== null || !tradingViewStatus?.configured}
-              >
-                {tradingViewActionState === 'reset' ? 'Resetting...' : 'Clear Webhook Settings'}
-              </button>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={tunnelReady ? 'step-badge done' : 'step-badge'}>2</span>
-              <div>
-                <h2>Generate Public URL</h2>
-                <p>Create the public HTTPS endpoint that TradingView or Postman will send requests to.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card">
-              <h2>Public Endpoint</h2>
-              <p className="module-subtitle">
-                Use the built-in Cloudflare tunnel so TradingView can reach your local machine.
-              </p>
-
-              <div className="tunnel-grid">
-                <div className="tunnel-panel">
-                  <span className="summary-label">Webhook URL</span>
-                  <strong className="tunnel-url">
-                    {tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : 'Generate URL first'}
-                  </strong>
-                  <small>
-                    TradingView requires a public HTTPS endpoint. Start the tunnel once and reuse this URL while it stays running.
-                  </small>
-                </div>
-                <div className="tunnel-panel">
-                  <span className="summary-label">Session</span>
-                  <strong>{tradingViewStatus?.user_name ?? session?.user_name ?? 'Nubra User'}</strong>
-                  <small>{session?.environment ?? 'UAT'} / {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS' : 'CNC'}</small>
-                </div>
-              </div>
-
-              <div className="tunnel-actions">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => handleTunnelAction('start')}
-                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
-                >
-                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('refresh')}
-                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('stop')}
-                  disabled={!tunnelStatus?.running || tunnelAction !== null}
-                >
-                  Stop
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(webhookUrl, 'copy-url')}
-                  disabled={!webhookUrl || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-url' ? 'Copying...' : 'Copy Webhook URL'}
-                </button>
-              </div>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className="step-badge">3</span>
-              <div>
-                <h2>Build Payload</h2>
-                <p>Choose manual or strategy mode, set your fields, and generate the Nubra JSON alert body.</p>
-              </div>
-            </div>
-          <section className="dashboard-module-card tradingview-builder-card">
-            <div className="code-card-header">
-              <div>
-                <h2>Payload Builder</h2>
-                <p className="module-subtitle">Generate the exact JSON alert body your TradingView alert should send.</p>
-              </div>
-              <div className="mode-toggle">
-                <button
-                  type="button"
-                  className={tradingViewMode === 'line' ? 'indicator-box active' : 'indicator-box'}
-                  onClick={() => setTradingViewMode('line')}
-                >
-                  Line Alert
-                </button>
-                <button
-                  type="button"
-                  className={tradingViewMode === 'strategy' ? 'indicator-box active' : 'indicator-box'}
-                  onClick={() => setTradingViewMode('strategy')}
-                >
-                  Strategy Alert
-                </button>
-              </div>
-            </div>
-
-            <div className="tradingview-form-grid">
-              <label className="field-group">
-                <span>Strategy Name</span>
-                <input value={tradingViewStrategyName} onChange={(event) => setTradingViewStrategyName(event.target.value)} />
-              </label>
-              <label className="field-group">
-                <span>Symbol</span>
-                <input value={tradingViewSymbol} onChange={(event) => setTradingViewSymbol(event.target.value.toUpperCase())} />
-              </label>
-              <label className="field-group">
-                <span>Exchange</span>
-                <select value={tradingViewExchange} onChange={(event) => setTradingViewExchange(event.target.value)}>
-                  <option value="NSE">NSE</option>
-                  <option value="BSE">BSE</option>
-                </select>
-              </label>
-              <label className="field-group">
-                <span>Action</span>
-                <select value={tradingViewOrderAction} onChange={(event) => setTradingViewOrderAction(event.target.value as TradingViewAction)}>
-                  <option value="BUY">BUY</option>
-                  <option value="SELL">SELL</option>
-                </select>
-              </label>
-              <label className="field-group">
-                <span>Quantity</span>
-                <input value={tradingViewQuantity} onChange={(event) => setTradingViewQuantity(event.target.value.replace(/\D/g, '') || '1')} />
-              </label>
-              <label className="field-group">
-                <span>Tag</span>
-                <input value={tradingViewTag} onChange={(event) => setTradingViewTag(event.target.value)} placeholder="swing-1 or 2026-04-15" />
-              </label>
-              <label className="field-group">
-                <span>Product</span>
-                <input value={resolvedTradingViewProduct} disabled />
-              </label>
-            </div>
-
-              <div className="dashboard-info-card compact-info-row">
-                <div>
-                  <strong>How to use</strong>
-                  <p>
-                    Configure the webhook first, copy the URL into TradingView, then paste the generated Nubra alert JSON below into the alert message box.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                className="primary-button"
-                onClick={handleTradingViewTest}
-                disabled={!tradingViewStatus?.configured || !session || Boolean(session.is_demo) || tradingViewActionState !== null}
-              >
-                {tradingViewActionState === 'test' ? 'Sending...' : 'Send Test Payload'}
-              </button>
-            </div>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span>
-              <div>
-                <h2>Copy and Test</h2>
-                <p>Copy the payload you need, then send a test order before you switch to live TradingView alerts.</p>
-              </div>
-            </div>
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card code-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Nubra Strategy JSON</h2>
-                  <p className="module-subtitle">Use this for TradingView strategy scripts where side and quantity come from TradingView placeholders.</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')}
-                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}
-                </button>
-              </div>
-              <pre className="code-block">{tradingViewStrategyJson}</pre>
-            </article>
-
-            <article className="dashboard-module-card code-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Nubra Manual Alert JSON</h2>
-                  <p className="module-subtitle">Use this for normal alerts where you want to send a fixed side and quantity in the message.</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')}
-                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}
-                </button>
-              </div>
-              <pre className="code-block">{tradingViewLineJson}</pre>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={executionEnabled ? 'step-badge done' : 'step-badge blocked'}>5</span>
-              <div>
-                <h2>Go Live and Monitor</h2>
-                <p>After a successful test, paste the URL and payload into TradingView and watch history below for live traffic.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Webhook Order History</h2>
-                  <p className="module-subtitle">Every accepted webhook order with time, quantity, sent price, fill price, and current mark-to-market.</p>
-                </div>
-                <div className="history-meta-row">
-                  <span className="pill">{filteredOrderHistory.length} orders</span>
-                </div>
-              </div>
-              {filteredOrderHistory.length === 0 ? (
-                <div className="table-empty">No accepted webhook orders yet.</div>
-              ) : (
-                <div className="table-shell">
-                  <div className="table-row table-head webhook-order-grid">
-                    <span>Time</span>
-                    <span>Trade</span>
-                    <span>Qty / Status</span>
-                    <span>Prices</span>
-                    <span>P&amp;L</span>
-                  </div>
-                  {filteredOrderHistory.map((entry) => (
-                    <div key={`${entry.time_ist}-${entry.order_id ?? entry.instrument ?? 'trade'}`} className="table-row webhook-order-grid">
-                      <span>
-                        <strong>{entry.time_ist}</strong>
-                        <small>{entry.source === 'test' ? 'Test' : 'Live'}</small>
-                      </span>
-                      <span>
-                        <strong>{entry.instrument ?? '-'}</strong>
-                        <small>
-                          {(entry.action ?? '-')} | {entry.strategy ?? 'No strategy'} | {entry.tag ?? 'No tag'}
-                        </small>
-                      </span>
-                      <span>
-                        <strong>{entry.filled_qty ?? entry.placed_qty ?? entry.requested_qty ?? '-'}</strong>
-                        <small>{entry.order_status ?? 'Pending'}</small>
-                      </span>
-                      <span>
-                        <strong>Fill {entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong>
-                        <small>
-                          Sent {entry.order_price?.toFixed(2) ?? 'Pending'} | LTP {entry.current_price?.toFixed(2) ?? 'Pending'}
-                        </small>
-                      </span>
-                      <span>
-                        <strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong>
-                        <small>Order #{entry.order_id ?? '-'} </small>
-                      </span>
+          {/* Step 1: Configure */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={webhookConfigured ? 'step-badge done' : 'step-badge'}>1</span><div><h2>Set Up Webhook Access</h2><p>Create the private secret and execution defaults.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <h3 style={{ marginBottom: 14 }}>Access & Execution Settings</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div><label className="field-group-label">Webhook Secret</label><input className="field-input" value={tradingViewSecret} onChange={(e) => setTradingViewSecret(e.target.value)} placeholder="Auto-generated if left blank" /></div>
+                  <div><label className="field-group-label">Default Product</label><select className="field-select" value={tradingViewProduct} onChange={(e) => setTradingViewProduct(e.target.value as OrderDeliveryType)}><option value="ORDER_DELIVERY_TYPE_IDAY">Intraday (MIS)</option><option value="ORDER_DELIVERY_TYPE_CNC">Delivery (CNC)</option></select></div>
+                  <div className="kill-switch-card">
+                    <div><strong style={{ fontSize: 13, fontWeight: 500 }}>Order Execution</strong><p style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>Pause live orders without stopping the webhook.</p></div>
+                    <div className="kill-switch-actions">
+                      <button className={`ghost-inline ${tradingViewStatus?.execution_enabled !== false ? 'ghost-inline-accent' : ''}`} onClick={() => handleTradingViewKillSwitch(true)} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>Allow Orders</button>
+                      <button className="ghost-inline" onClick={() => handleTradingViewKillSwitch(false)} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>Pause Orders</button>
                     </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="dashboard-module-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Webhook Positions</h2>
-                  <p className="module-subtitle">Matched positions and P&amp;L grouped by strategy, tag, and instrument.</p>
-                </div>
-                <div className="history-meta-row">
-                  <span className="pill">{filteredPositions.length} groups</span>
+                  </div>
+                  <button className="primary-btn" style={{ width: '100%' }} onClick={handleTradingViewConfigure} disabled={!session || Boolean(session?.is_demo) || tradingViewActionState !== null}>{tradingViewActionState === 'configure' ? 'Saving...' : 'Save Webhook Settings'}</button>
+                  <button className="ghost-inline" style={{ width: '100%', textAlign: 'center' }} onClick={handleTradingViewReset} disabled={tradingViewActionState !== null || !tradingViewStatus?.configured}>{tradingViewActionState === 'reset' ? 'Resetting...' : 'Clear Webhook Settings'}</button>
                 </div>
               </div>
-              {filteredPositions.length === 0 ? (
-                <div className="table-empty">No grouped webhook positions yet.</div>
-              ) : (
-                <div className="position-ledger-list">
-                  {filteredPositions.map((position) => (
-                    <div key={`${position.strategy ?? 'none'}-${position.tag ?? 'none'}-${position.instrument}-${position.exchange}`} className="position-ledger-card">
-                      <div className="position-ledger-head">
-                        <div>
-                          <strong>{position.instrument}</strong>
-                          <small>
-                            {position.exchange} | {position.strategy ?? 'No strategy'} | {position.tag ?? 'No tag'}
-                          </small>
+            </div>
+          </div>
+
+          {/* Step 2: Tunnel */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={tunnelReady ? 'step-badge done' : 'step-badge'}>2</span><div><h2>Generate Public URL</h2><p>Create the public HTTPS endpoint TradingView will POST to.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <div className="tunnel-grid">
+                  <div className="tunnel-panel"><span className="summary-label">Webhook URL</span><strong className="tunnel-url">{tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : 'Generate URL first'}</strong><small>TradingView requires HTTPS. Reuse while tunnel runs.</small></div>
+                  <div className="tunnel-panel"><span className="summary-label">Session</span><strong>{tradingViewStatus?.user_name ?? session?.user_name ?? 'Nubra User'}</strong><small>{session?.environment ?? 'UAT'} / {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS' : 'CNC'}</small></div>
+                </div>
+                <div className="tunnel-actions" style={{ marginTop: 14 }}>
+                  <button className="ghost-inline ghost-inline-accent" onClick={() => handleTunnelAction('start')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>{tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}</button>
+                  <button className="ghost-inline" onClick={() => handleTunnelAction('refresh')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>Refresh</button>
+                  <button className="ghost-inline" onClick={() => handleTunnelAction('stop')} disabled={!tunnelStatus?.running || tunnelAction !== null}>Stop</button>
+                  <button className="ghost-inline" onClick={() => copyToClipboard(webhookUrl, 'copy-url')} disabled={!webhookUrl || tradingViewActionState !== null}>{tradingViewActionState === 'copy-url' ? 'Copying...' : 'Copy URL'}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 3: Payload Builder */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className="step-badge">3</span><div><h2>Build Payload</h2><p>Generate the Nubra JSON alert body for TradingView.</p></div></div>
+            <div className="sb-card">
+              <div className="sb-card-head">
+                <div><span className="sb-card-kicker">Payload Builder</span><h3>Alert JSON Generator</h3></div>
+                <div className="mode-toggle">
+                  <button className={tradingViewMode === 'line' ? 'indicator-box active' : 'indicator-box'} onClick={() => setTradingViewMode('line')}>Line Alert</button>
+                  <button className={tradingViewMode === 'strategy' ? 'indicator-box active' : 'indicator-box'} onClick={() => setTradingViewMode('strategy')}>Strategy Alert</button>
+                </div>
+              </div>
+              <div className="tradingview-form-grid">
+                <div><label className="field-group-label">Strategy Name</label><input className="field-input" value={tradingViewStrategyName} onChange={(e) => setTradingViewStrategyName(e.target.value)} /></div>
+                <div><label className="field-group-label">Symbol</label><input className="field-input" value={tradingViewSymbol} onChange={(e) => setTradingViewSymbol(e.target.value.toUpperCase())} /></div>
+                <div><label className="field-group-label">Exchange</label><select className="field-select" value={tradingViewExchange} onChange={(e) => setTradingViewExchange(e.target.value)}><option value="NSE">NSE</option><option value="BSE">BSE</option></select></div>
+                <div><label className="field-group-label">Action</label><select className="field-select" value={tradingViewOrderAction} onChange={(e) => setTradingViewOrderAction(e.target.value as TradingViewAction)}><option value="BUY">BUY</option><option value="SELL">SELL</option></select></div>
+                <div><label className="field-group-label">Quantity</label><input className="field-input" value={tradingViewQuantity} onChange={(e) => setTradingViewQuantity(e.target.value.replace(/\D/g,'') || '1')} /></div>
+                <div><label className="field-group-label">Tag</label><input className="field-input" value={tradingViewTag} onChange={(e) => setTradingViewTag(e.target.value)} placeholder="swing-1 or 2026-04-15" /></div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                <button className="primary-btn" style={{ fontSize: 13, padding: '10px 18px' }} onClick={handleTradingViewTest} disabled={!tradingViewStatus?.configured || !session || Boolean(session.is_demo) || tradingViewActionState !== null}>{tradingViewActionState === 'test' ? 'Sending...' : 'Send Test Payload'}</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 4: Copy JSONs */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span><div><h2>Copy and Test</h2><p>Copy the payload, then send a test before going live.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Strategy JSON</span><h3>Nubra Strategy Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <pre className="code-block">{tradingViewStrategyJson}</pre>
+              </div>
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Line Alert JSON</span><h3>Nubra Manual Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <pre className="code-block">{tradingViewLineJson}</pre>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 5: Monitor */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={executionEnabled ? 'step-badge done' : 'step-badge'}>5</span><div><h2>Go Live and Monitor</h2><p>Watch webhook orders and event history below.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Order History</span><h3>Webhook Orders</h3></div><span className="pill-v2">{filteredOrderHistory.length} orders</span></div>
+                {filteredOrderHistory.length === 0 ? <div className="table-empty">No accepted webhook orders yet.</div> : (
+                  <div className="table-shell">
+                    <div className="table-row table-head webhook-order-grid" style={{ gridTemplateColumns: '1.5fr 1.5fr 1fr 1.5fr 1fr' }}><span>Time</span><span>Trade</span><span>Qty</span><span>Prices</span><span>P&L</span></div>
+                    {filteredOrderHistory.map((entry) => (
+                      <div key={`${entry.time_ist}-${entry.order_id ?? entry.instrument ?? 'trade'}`} className="table-row webhook-order-grid" style={{ gridTemplateColumns: '1.5fr 1.5fr 1fr 1.5fr 1fr' }}>
+                        <span><strong>{entry.time_ist}</strong><small>{entry.source === 'test' ? 'Test' : 'Live'}</small></span>
+                        <span><strong>{entry.instrument ?? '-'}</strong><small>{entry.action ?? '-'} | {entry.strategy ?? 'No strategy'}</small></span>
+                        <span><strong>{entry.filled_qty ?? entry.placed_qty ?? entry.requested_qty ?? '-'}</strong><small>{entry.order_status ?? 'Pending'}</small></span>
+                        <span><strong>Fill {entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong><small>LTP {entry.current_price?.toFixed(2) ?? 'Pending'}</small></span>
+                        <span><strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong></span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Event Log</span><h3>Webhook Activity</h3></div>
+                  <div className="mode-toggle">
+                    <button className={historySourceFilter === 'all' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('all')}>All</button>
+                    <button className={historySourceFilter === 'test' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('test')}>Test</button>
+                    <button className={historySourceFilter === 'live' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('live')}>Live</button>
+                  </div>
+                </div>
+                {filteredHistory.length === 0 ? <div className="table-empty">No webhook history yet.</div> : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {filteredHistory.map((entry) => (
+                      <div key={entry.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--hairline)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><strong style={{ fontSize: 13 }}>{entry.message}</strong><span style={{ fontSize: 11, color: 'var(--fg-faint)' }}>{entry.time_ist}</span></div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <span className={`pill-v2 ${entry.status === 'accepted' ? 'pill-success' : entry.status === 'error' || entry.status === 'blocked' ? 'pill-danger' : ''}`}>{entry.status}</span>
+                          <span className="pill-v2">{entry.source === 'test' ? 'Test' : 'Live'}</span>
+                          {entry.instrument && <span className="pill-v2 pill-accent">{entry.instrument}</span>}
+                          {entry.action && <span className="pill-v2">{entry.action}</span>}
                         </div>
-                        <span className={position.direction === 'LONG' ? 'pill pill-success' : position.direction === 'SHORT' ? 'pill pill-danger' : 'pill'}>
-                          {position.direction}
-                        </span>
                       </div>
-                      <div className="history-stats-grid position-ledger-grid">
-                        <div><span>Net Qty</span><strong>{position.net_qty}</strong></div>
-                        <div><span>Avg Entry</span><strong>{position.avg_entry_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                        <div><span>Current Price</span><strong>{position.current_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                        <div><span>Realized</span><strong>{position.realized_pnl.toFixed(2)}</strong></div>
-                        <div><span>Unrealized</span><strong>{position.unrealized_pnl.toFixed(2)}</strong></div>
-                        <div><span>Total P&amp;L</span><strong>{position.total_pnl.toFixed(2)}</strong></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-          </section>
-
-          <article className="dashboard-module-card">
-            <div className="code-card-header">
-              <div>
-                <h2>Webhook Event Log</h2>
-                <p className="module-subtitle">Raw request and execution logs for test sends and live TradingView webhook traffic.</p>
-              </div>
-              <div className="mode-toggle">
-                <button type="button" className={historySourceFilter === 'all' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('all')}>
-                  All
-                </button>
-                <button type="button" className={historySourceFilter === 'test' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('test')}>
-                  Test
-                </button>
-                <button type="button" className={historySourceFilter === 'live' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('live')}>
-                  Live
-                </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
-            {(filteredHistory ?? []).length === 0 ? (
-              <div className="table-empty">No webhook history yet.</div>
-            ) : (
-              <div className="webhook-log-list">
-                {filteredHistory.map((entry) => (
-                  <div key={entry.id} className={`webhook-log-item ${entry.status === 'accepted' ? 'success' : entry.status === 'error' || entry.status === 'blocked' ? 'error' : ''}`}>
-                    <div className="webhook-log-head">
-                      <strong>{entry.message}</strong>
-                      <span>{entry.time_ist}</span>
-                    </div>
-                    <div className="history-meta-row">
-                      <span className="pill">{entry.source === 'test' ? 'Test' : 'Live'}</span>
-                      <span className="pill">{entry.status}</span>
-                      <span className="pill">{entry.strategy ?? 'No strategy'}</span>
-                      <span className="pill">{entry.tag ?? 'No tag'}</span>
-                      <span className="pill">{entry.day_ist}</span>
-                    </div>
-                    <div className="history-stats-grid">
-                      <div><span>Instrument</span><strong>{entry.instrument ?? '-'}</strong></div>
-                      <div><span>Action</span><strong>{entry.action ?? '-'}</strong></div>
-                      <div><span>Qty</span><strong>{entry.quantity ?? '-'}</strong></div>
-                      <div><span>Order</span><strong>{entry.order_status ?? '-'}</strong></div>
-                      <div><span>P&L</span><strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong></div>
-                    </div>
-                    <div className="history-stats-grid history-stats-grid-detail">
-                      <div><span>Requested Qty</span><strong>{entry.requested_qty ?? '-'}</strong></div>
-                      <div><span>Placed Qty</span><strong>{entry.placed_qty ?? '-'}</strong></div>
-                      <div><span>Filled Qty</span><strong>{entry.filled_qty ?? '-'}</strong></div>
-                      <div><span>Order Price</span><strong>{entry.order_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>Avg Fill Price</span><strong>{entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>LTP Used</span><strong>{entry.ltp_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>Order ID</span><strong>{entry.order_id ?? '-'}</strong></div>
-                      <div><span>Ref ID</span><strong>{entry.ref_id ?? '-'}</strong></div>
-                      <div><span>Lot Size</span><strong>{entry.lot_size ?? '-'}</strong></div>
-                      <div><span>Tick Size</span><strong>{entry.tick_size ?? '-'}</strong></div>
-                    </div>
-                    {entry.payload ? <pre className="code-block compact">{JSON.stringify(entry.payload, null, 2)}</pre> : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-          </section>
+          </div>
 
-          {tradingViewError ? <section className="error-banner dashboard-error">{tradingViewError}</section> : null}
-          {tradingViewMessage ? <section className="message-banner dashboard-info-card">{tradingViewMessage}</section> : null}
-        </section>
-      </main>
+          {tradingViewError ? <div className="err-banner">{tradingViewError}</div> : null}
+          {tradingViewMessage ? <div className="msg-banner">{tradingViewMessage}</div> : null}
+        </main>
+      </div>
     )
   }
 
   if (view === 'scalper') {
-  const { status: liveStatus, error: liveError, connected: liveConnected, optionPair, panelMeta, registerPanel } = scalperLive
-  const scalperFeedLabel = scalperValidating
-    ? 'Checking Session'
-    : liveConnected
-      ? 'Live Connected'
-      : liveError
-        ? 'Feed Error'
-        : 'Connecting'
-  const scalperFeedTone = scalperValidating
-    ? '#f59e0b'
-    : liveConnected
-      ? '#22c55e'
-      : liveError
-        ? '#ef4444'
-        : '#64748b'
-    const underlyingMeta = panelMeta?.underlying ?? null
-    const callMeta = panelMeta?.call_option ?? null
-    const putMeta = panelMeta?.put_option ?? null
-
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Scalper')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>Scalper</h1>
-              <p>
-                Live three-panel workspace — underlying on the left, matched call / put charts on the right.
-                Charts tick in real time via Nubra market data.
-              </p>
-            </div>
-            <div className="dashboard-header-pills">
-              <span className="pill">{session?.environment ?? 'UAT'}</span>
-              <span className="pill">{scalperUnderlying}</span>
-              <span className="pill pill-dark">{scalperInterval}</span>
-              <span className="pill" style={{ color: scalperFeedTone }}>
-                {scalperValidating ? '◌ Checking' : liveConnected ? '● Live' : liveError ? '● Feed Error' : '○ Connecting'}
+      <div className="subview-shell">
+        {renderDashboardNav('Scalper')}
+        <main className="subview-main">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button className="ghost-inline" onClick={() => setView('dashboard')}>← Dashboard</button>
+            <span className="builder-crumb-sep">/</span>
+            <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>Scalper</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <span className="pill-v2">{session?.environment ?? 'UAT'}</span>
+              <span className="pill-v2">{scalperUnderlying} · {scalperInterval}</span>
+              <span className="pill-v2" style={{ color: scalperFeedTone }}>
+                {scalperValidating ? '◌ Checking' : liveConnected ? '● Live' : liveError ? '● Error' : '○ Connecting'}
               </span>
             </div>
-          </section>
+          </div>
 
           {session?.is_demo ? (
-            <section className="dashboard-info-card">
-              <div>
-                <strong>Real session required</strong>
-                <p>Live charts stream Nubra market data. Open a real UAT or PROD session to activate the scalper workspace.</p>
-              </div>
-            </section>
+            <div className="msg-banner">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Real session required</strong>
+              Live charts stream Nubra market data. Open a real UAT or PROD session to activate the scalper workspace.
+            </div>
           ) : (
             <>
-              <section className="scalper-terminal">
-                <div className="scalper-toolbar">
-                  <div className="scalper-toolbar-group">
-                    <label className="scalper-field">
-                      <span>Underlying</span>
-                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value as (typeof scalperUnderlyings)[number])}>
-                        {scalperUnderlyings.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="scalper-field">
-                      <span>Timeframe</span>
-                      <select value={scalperInterval} onChange={(event) => setScalperInterval(event.target.value as Interval)}>
-                        {intervals.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="scalper-field">
-                      <span>Strike</span>
-                      <input
-                        value={scalperStrikePrice}
-                        onChange={(event) => setScalperStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
-                        placeholder="24300"
-                      />
-                    </label>
-                    <label className="scalper-field">
-                      <span>Expiry</span>
-                      <input
-                        value={scalperExpiry}
-                        onChange={(event) => setScalperExpiry(event.target.value.toUpperCase())}
-                        placeholder="21 APR 26"
-                      />
-                    </label>
+              <div className="scalper-controls">
+                <label>UNDERLYING<select value={scalperUnderlying} onChange={(e) => setScalperUnderlying(e.target.value as (typeof scalperUnderlyings)[number])}>{scalperUnderlyings.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                <label>TIMEFRAME<select value={scalperInterval} onChange={(e) => setScalperInterval(e.target.value as Interval)}>{intervals.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                <label>STRIKE<input type="text" value={scalperStrikePrice} onChange={(e) => setScalperStrikePrice(e.target.value.replace(/[^\d]/g,''))} placeholder="24300" /></label>
+                <label>EXPIRY<input type="text" value={scalperExpiry} onChange={(e) => setScalperExpiry(e.target.value.toUpperCase())} placeholder="21 APR 26" /></label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <span className="pill-v2" style={{ color: scalperFeedTone }}>{scalperFeedLabel}</span>
+                    <span className="pill-v2">{optionPair?.expiry ?? 'No expiry'}</span>
+                    <span className="pill-v2">Lot {optionPair?.lot_size ?? '--'}</span>
                   </div>
-
-                  <div className="scalper-toolbar-side">
-                    <div className="scalper-status-stack">
-                      <span className="scalper-status-pill" style={{ color: scalperFeedTone }}>{scalperFeedLabel}</span>
-                      <span className="scalper-status-pill">{optionPair?.expiry ?? 'No expiry'}</span>
-                      <span className="scalper-status-pill">Lot {optionPair?.lot_size ?? '--'}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={scalperValidating}
-                      onClick={() => { void validateScalperSessionAndReconnect() }}
-                    >
-                      {scalperValidating ? 'Checking Session...' : liveConnected ? 'Reconnect Feed' : 'Connect Feed'}
-                    </button>
-                  </div>
+                  <button className="primary-btn" style={{ padding: '10px 18px', fontSize: 13 }} disabled={scalperValidating} onClick={() => { void validateScalperSessionAndReconnect() }}>
+                    {scalperValidating ? 'Checking...' : liveConnected ? 'Reconnect Feed' : 'Connect Feed'}
+                  </button>
                 </div>
+              </div>
 
-                <div className="scalper-terminal-header">
-                  <div className="scalper-terminal-title">Call</div>
-                  <div className="scalper-terminal-title is-active">Underlying</div>
-                  <div className="scalper-terminal-title">Put</div>
-                </div>
+              <div className="scalper-grid">
+                <ScalperLiveChart panel="call_option" accent="green" title="Call Option" displayName={callMeta?.display_name ?? null} lastPrice={callMeta?.last_price ?? null} interval={callMeta?.interval ?? scalperInterval} exchange={callMeta?.exchange ?? 'NSE'} height={360} onSeriesReady={registerPanel} />
+                <ScalperLiveChart panel="underlying" accent="blue" title="Underlying" displayName={underlyingMeta?.display_name ?? null} lastPrice={underlyingMeta?.last_price ?? null} interval={underlyingMeta?.interval ?? scalperInterval} exchange={underlyingMeta?.exchange ?? 'NSE'} height={360} onSeriesReady={registerPanel} />
+                <ScalperLiveChart panel="put_option" accent="red" title="Put Option" displayName={putMeta?.display_name ?? null} lastPrice={putMeta?.last_price ?? null} interval={putMeta?.interval ?? scalperInterval} exchange={putMeta?.exchange ?? 'NSE'} height={360} onSeriesReady={registerPanel} />
+              </div>
 
-                <section className="scalper-chart-board">
-                  <ScalperLiveChart
-                    panel="call_option"
-                    accent="green"
-                    title="Call Option"
-                    displayName={callMeta?.display_name ?? null}
-                    lastPrice={callMeta?.last_price ?? null}
-                    interval={callMeta?.interval ?? scalperInterval}
-                    exchange={callMeta?.exchange ?? 'NSE'}
-                    height={430}
-                    onSeriesReady={registerPanel}
-                  />
-                  <ScalperLiveChart
-                    panel="underlying"
-                    accent="blue"
-                    title="Underlying"
-                    displayName={underlyingMeta?.display_name ?? null}
-                    lastPrice={underlyingMeta?.last_price ?? null}
-                    interval={underlyingMeta?.interval ?? scalperInterval}
-                    exchange={underlyingMeta?.exchange ?? 'NSE'}
-                    height={430}
-                    onSeriesReady={registerPanel}
-                  />
-                  <ScalperLiveChart
-                    panel="put_option"
-                    accent="red"
-                    title="Put Option"
-                    displayName={putMeta?.display_name ?? null}
-                    lastPrice={putMeta?.last_price ?? null}
-                    interval={putMeta?.interval ?? scalperInterval}
-                    exchange={putMeta?.exchange ?? 'NSE'}
-                    height={430}
-                    onSeriesReady={registerPanel}
-                  />
-                </section>
-
-                <div className="scalper-terminal-footer">
-                  <div className="scalper-terminal-note">
-                    {optionPair
-                      ? `${optionPair.call_display_name} / ${optionPair.put_display_name}`
-                      : 'Resolving option pair...'}
-                  </div>
-                  <div className="scalper-terminal-note">
-                    {liveError
-                      ? liveError
-                      : liveStatus || 'Live websocket updates are active for the current candle. REST is only used for periodic reconcile.'}
-                  </div>
-                </div>
-              </section>
+              <div className="msg-banner" style={{ fontSize: 12 }}>
+                {optionPair ? `${optionPair.call_display_name} / ${optionPair.put_display_name}` : 'Resolving option pair...'}
+                {liveError ? <span style={{ color: 'var(--neg-soft)', marginLeft: 16 }}>{liveError}</span> : null}
+              </div>
             </>
           )}
-        </section>
-      </main>
+        </main>
+      </div>
     )
   }
 
   if (view === 'dashboard') {
+    const moduleCards = [
+      { key: 'no-code' as const,            title: 'No-Code Backtester', sub: 'Visual strategy authoring',    accent: 'rgb(124,207,94)',  glow: '124,207,94',  icon: 'backtest' },
+      { key: 'volume-breakout' as const,     title: 'Volume Breakout',    sub: 'Market-wide breakout scanner', accent: 'rgb(120,201,255)', glow: '120,201,255', icon: 'platform' },
+      { key: 'tradingview-webhook' as const, title: 'Webhook Strategies', sub: 'Signal-driven automation',     accent: 'rgb(177,102,16)',  glow: '177,102,16',  icon: 'webhook'  },
+      { key: 'scalper' as const,             title: 'Scalper',            sub: 'Intraday live charts',          accent: 'rgb(149,220,122)', glow: '149,220,122', icon: 'chain'    },
+      { key: null,                           title: 'Trade Book',         sub: 'Historical ledger',             accent: 'rgb(0,118,196)',   glow: '0,118,196',   icon: 'book'     },
+      { key: null,                           title: 'Risk & Tools',       sub: 'Exposure & position sizing',   accent: 'rgb(241,66,66)',   glow: '241,66,66',   icon: 'risk'     },
+    ]
+    const iconPaths: Record<string, React.ReactNode> = {
+      backtest: <><path d="M3 17l4-6 4 3 6-9"/><path d="M3 21h18"/></>,
+      platform: <><rect x={3} y={4} width={18} height={13} rx={1.5}/><path d="M3 14h18M8 20h8M12 17v3"/></>,
+      webhook:  <><circle cx={7} cy={7} r={2.5}/><circle cx={17} cy={17} r={2.5}/><circle cx={17} cy={7} r={2.5}/><path d="M9 8.5L15 15.5M15 7h-6"/></>,
+      book:     <><path d="M4 5v15a1 1 0 001 1h15V6a2 2 0 00-2-2H6a2 2 0 00-2 1z"/><path d="M8 9h8M8 13h8M8 17h5"/></>,
+      chain:    <><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/><path d="M12 4v16"/></>,
+      risk:     <><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/><path d="M12 9v4M12 16v.01"/></>,
+    }
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Dashboard')}
-
-          <section className="dashboard-header">
-            <div>
-              <h1>Dashboard</h1>
-              <p>
-                Logged in as {session?.user_name ?? 'Nubra User'} on {session?.environment ?? 'PROD'}.
-              </p>
-              {isSessionChecking ? <p>Checking session status...</p> : null}
+      <div className="dash">
+        {renderDashboardNav('Dashboard')}
+        <main className="dash-main">
+          <section className="hero">
+            <div className="hero-l">
+              <div className="eyebrow"><span className="eyebrow-dot"/>SESSION / {session?.environment ?? 'PROD'}</div>
+              <h1 className="hero-title">{isSessionChecking ? 'Checking session...' : `Welcome, ${session?.user_name?.split(' ')[0] ?? 'Trader'}.`}</h1>
+              <p className="hero-sub">Your NubraOSS workspace is live on <em>{session?.environment ?? 'PROD'}</em>. Launch any module below to begin executing strategies.</p>
+            </div>
+            <div className="hero-r">
+              <div className="live-stat"><span className="ls-label">Environment</span><span className="ls-value">{session?.environment ?? '—'}</span><span className="ls-delta">{tunnelStatus?.running ? 'Tunnel active' : 'Tunnel off'}</span></div>
+              <div className="live-stat"><span className="ls-label">Broker</span><span className="ls-value">{session?.broker ?? '—'}</span><span className="ls-delta">Session active</span></div>
+              <div className="live-stat"><span className="ls-label">Public IP</span><span className="ls-value" style={{fontSize:14}}>{publicIp || '...'}</span><span className="ls-delta">Machine IP</span></div>
+              <div className="live-stat"><span className="ls-label">Tunnel</span><span className={`ls-value ls-delta ${tunnelStatus?.running ? 'pos' : ''}`} style={{fontSize:14}}>{tunnelStatus?.running ? 'Running' : 'Stopped'}</span><span className="ls-delta">{tunnelStatus?.public_url ? 'URL ready' : 'Generate URL'}</span></div>
             </div>
           </section>
 
-          <section className="card-grid">
-            {dashboardCards.map((card) => (
-              <article
-                key={card.title}
-                className={card.key ? 'dashboard-module-card is-clickable' : 'dashboard-module-card'}
-                onClick={card.key ? () => handleDashboardCardOpen(card.key) : undefined}
-                role={card.key ? 'button' : undefined}
-                tabIndex={card.key ? 0 : undefined}
-                onKeyDown={
-                  card.key
-                    ? (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          handleDashboardCardOpen(card.key)
-                        }
-                      }
-                    : undefined
-                }
-              >
-                <div className={`module-badge ${card.badgeClass}`}>{card.badge}</div>
-                <h2>{card.title}</h2>
-                <p>{card.description}</p>
-                <span className="module-footer">{card.footer}</span>
-              </article>
-            ))}
-          </section>
-
-          <section className="dashboard-info-card">
-            <div>
-              <strong>Getting Started</strong>
-              <p>
-                This is the first dashboard shell. Each card is a placeholder entry point for the
-                Nubra-native modules we will build next.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => window.open('https://docs.nubra.io', '_blank', 'noopener,noreferrer')}
-            >
-              View Documentation
-            </button>
-          </section>
-
-          <section className="dashboard-module-card tunnel-card">
-            <div className="tunnel-card-header">
-              <div>
-                <h2>Public Webhook URL</h2>
-                <p>Start a built-in Cloudflare tunnel so TradingView can reach your local NubraOSS backend.</p>
-              </div>
-              <div className="tunnel-actions">
+          <section className="modules">
+            <div className="section-head"><h2>Operating modules</h2><span className="section-meta">Six surfaces / unified runtime</span></div>
+            <div className="module-grid">
+              {moduleCards.map((mod, index) => (
                 <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => handleTunnelAction('start')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
+                  key={mod.title}
+                  className="module-card"
+                  style={{ '--accent': mod.accent, '--glow': mod.glow } as React.CSSProperties}
+                  onClick={mod.key ? () => handleDashboardCardOpen(mod.key!) : undefined}
+                  disabled={!mod.key}
                 >
-                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('refresh')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('stop')}
-                  disabled={!tunnelStatus?.running || tunnelAction !== null}
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-
-            <div className="tunnel-grid">
-              <div className="tunnel-panel">
-                <span className="summary-label">Webhook URL</span>
-                <strong className="tunnel-url">
-                  {tunnelStatus?.public_url ?? 'Not generated yet'}
-                </strong>
-                <small>TradingView target: {(tunnelStatus?.public_url ?? 'Generate URL') + '/api/webhooks/tradingview'}</small>
-              </div>
-              <div className="tunnel-panel">
-                <span className="summary-label">Target</span>
-                <strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong>
-                <small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small>
-              </div>
-            </div>
-
-            {tunnelStatus?.last_error ? <div className="error-banner">{tunnelStatus.last_error}</div> : null}
-
-            <div className="tunnel-log-card">
-              <span className="summary-label">Tunnel Logs</span>
-              {(tunnelStatus?.logs ?? []).length === 0 ? (
-                <div className="table-empty">No tunnel logs yet.</div>
-              ) : (
-                <div className="tunnel-log-list">
-                  {(tunnelStatus?.logs ?? []).slice(-6).map((line, index) => (
-                    <div key={`${index}-${line}`} className="tunnel-log-line">
-                      {line}
+                  <div className="mc-glow" aria-hidden />
+                  <div className="mc-top">
+                    <div className="mc-icon">
+                      <svg viewBox="0 0 24 24" width={22} height={22} fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round">{iconPaths[mod.icon]}</svg>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <span className="mc-num">0{index + 1}</span>
+                  </div>
+                  <div className="mc-body"><h3 className="mc-title">{mod.title}</h3><p className="mc-sub">{mod.sub}</p></div>
+                  <div className="mc-foot"><span className="mc-cta">{mod.key ? 'Open' : 'Soon'}<svg viewBox="0 0 24 24" width={12} height={12} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+                </button>
+              ))}
             </div>
           </section>
-        </section>
-      </main>
+
+          <section className="rail">
+            <div className="rail-panel">
+              <div className="panel-h"><h3>Public Webhook Tunnel</h3><span className="panel-h-meta">{tunnelStatus?.running ? 'Active' : 'Offline'}</span></div>
+              <div className="tunnel-grid">
+                <div className="tunnel-panel"><span className="summary-label">Webhook URL</span><strong className="tunnel-url">{tunnelStatus?.public_url ?? 'Not generated'}</strong><small>{tunnelStatus?.running ? 'TradingView ready' : 'Start tunnel to get URL'}</small></div>
+                <div className="tunnel-panel"><span className="summary-label">Local Target</span><strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong><small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small></div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <button className="ghost-inline ghost-inline-accent" onClick={() => handleTunnelAction('start')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>{tunnelAction === 'start' ? 'Starting...' : 'Start Tunnel'}</button>
+                <button className="ghost-inline" onClick={() => handleTunnelAction('refresh')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>Refresh</button>
+                <button className="ghost-inline" onClick={() => handleTunnelAction('stop')} disabled={!tunnelStatus?.running || tunnelAction !== null}>Stop</button>
+              </div>
+              {tunnelStatus?.last_error ? <div className="err-banner" style={{marginTop:10}}>{tunnelStatus.last_error}</div> : null}
+            </div>
+            <div className="rail-panel">
+              <div className="panel-h"><h3>Session</h3><span className="panel-h-meta">Active</span></div>
+              <div className="system">
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Account</span><span className="sys-v">{session?.account_id ?? '—'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">User</span><span className="sys-v">{session?.user_name ?? '—'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Environment</span><span className="sys-v">{session?.environment ?? '—'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Broker</span><span className="sys-v">{session?.broker ?? '—'}</span></div></div>
+              </div>
+            </div>
+            <div className="rail-panel">
+              <div className="panel-h"><h3>System</h3><span className="panel-h-meta">Live</span></div>
+              <div className="system">
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Tunnel</span><span className="sys-v">{tunnelStatus?.running ? 'Running' : 'Stopped'}</span></div><div className="sys-bar"><span className={`sys-fill ${tunnelStatus?.running ? 'green' : ''}`} style={{width: tunnelStatus?.running ? '100%' : '0%'}} /></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Session</span><span className="sys-v">Active</span></div><div className="sys-bar"><span className="sys-fill green" style={{width:'100%'}} /></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Public IP</span><span className="sys-v">{publicIp || 'Loading'}</span></div><div className="sys-bar"><span className="sys-fill" style={{width: publicIp ? '100%' : '20%'}} /></div></div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
     )
   }
 
+  // ── Login Screen ─────────────────────────────────────────────────────────
   return (
-    <main className="login-shell">
-      <section className="login-layout">
-        <section className="hero-panel">
-          <div className="hero-surface">
-            <div className="brand-block">
-              <img src={nubraLogo} alt="Nubra" className="brand-logo hero-brand-logo" />
-              <div>
-                <div className="brand-name">NubraOSS</div>
-                <div className="brand-caption">Personal algo trading workspace</div>
-              </div>
-            </div>
+    <div className="auth-scene">
+      <div className="auth-bg">
+        <div className="grid-pattern" />
+        <div className="ambient a1" />
+        <div className="ambient a2" />
+      </div>
 
-            <div className="hero-copy">
-              <h1>
-                Welcome to <span className="hero-accent">NubraOSS</span>
-              </h1>
-              <p>
-                Sign in to your account to access your trading dashboard and manage your no-code
-                and automated trading workflows.
-              </p>
-              <div className="hero-alert">
-                <strong>First Time User?</strong>
-                <span>
-                  This section will later hold onboarding guidance, release notes, and product
-                  help.
-                </span>
-              </div>
-            </div>
+      <header className="auth-chrome">
+        <div className="logo">
+          <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={34} height={34} />
+          <span className="wm" style={{ fontSize: 16 }}>NubraOSS</span>
+        </div>
+        <div className="chrome-right">
+          <span className="chrome-meta"><span className="live-dot"/>All systems nominal</span>
+          <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+            <span className={`tt-track ${theme}`}>
+              <span className="tt-thumb">
+                {theme === 'dark'
+                  ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/></svg>
+                  : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4}/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>
+                }
+              </span>
+            </span>
+          </button>
+        </div>
+      </header>
+
+      <main className="auth-stage">
+        <div className="glass-panel">
+          <div className="panel-edge" aria-hidden />
+          <div className="panel-head">
+            <div className="eyebrow"><span className="eyebrow-dot"/>INSTITUTIONAL GRADE · V2.0</div>
+            <h1 className="panel-title">Sign in</h1>
+            <p className="panel-sub">Resume where precision meets scale.</p>
           </div>
-        </section>
 
-        <section className="login-frame">
-          <div className="login-frame-inner">
-            <div className="title-block">
-              <h1>Sign in to Nubra</h1>
-              <p>{helperText}</p>
-            </div>
-
-            <div className="demo-banner">
-              <div>
-                <strong>Need a safe test path?</strong>
-                <span>Use demo mode to inspect the latest UI without real credentials.</span>
-              </div>
-              <button type="button" className="secondary-button demo-button" onClick={handleDemoLogin}>
-                Enter Demo
+          <div className="seg-control" role="tablist" aria-label="Environment selector">
+            <span className={`seg-pill ${environment === 'UAT' ? 'right' : ''}`} />
+            {(['PROD','UAT'] as const).map((env) => (
+              <button key={env} className={`seg-btn ${environment === env ? 'on' : ''}`} onClick={() => setEnvironment(env)}>
+                <span className={`env-dot ${env === 'PROD' ? 'prod' : 'uat'}`}/>{env}
               </button>
-            </div>
-
-            <div className="env-switch" role="tablist" aria-label="Environment">
-              <button
-                type="button"
-                className={environment === 'PROD' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('PROD')}
-              >
-                PROD
-              </button>
-              <button
-                type="button"
-                className={environment === 'UAT' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('UAT')}
-              >
-                UAT
-              </button>
-            </div>
-
-            <div className="steps-column">
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={phoneComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>Phone number</h2>
-                    <p>Bootstrap the OTP flow from your Nubra account.</p>
-                  </div>
-                </div>
-
-                <form className="step-form step-form-phone" onSubmit={handleStart}>
-                  <input
-                    value={phone}
-                    onChange={(event) => setPhone(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter phone number"
-                    maxLength={15}
-                    required
-                  />
-                  <button
-                    className="primary-button"
-                    disabled={activeAction !== null || phone.length < 10}
-                    type="submit"
-                  >
-                    {activeAction === 'phone' ? 'Sending OTP...' : 'Send OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={otpComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>OTP</h2>
-                    <p>
-                      {maskedPhone
-                        ? `Verify the SMS OTP sent to ${maskedPhone}.`
-                        : 'Enter OTP after the first step completes.'}
-                    </p>
-                  </div>
-                </div>
-
-                <form className="step-form step-form-inline" onSubmit={handleOtp}>
-                  <input
-                    value={otp}
-                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter OTP"
-                    maxLength={8}
-                    required
-                    disabled={!phoneComplete || otpComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !phoneComplete || otp.length < 4 || otpComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'otp' ? 'Verifying OTP...' : 'Verify OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={mpinComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>MPIN</h2>
-                    <p>Confirm the MPIN only after OTP verification succeeds.</p>
-                  </div>
-                </div>
-
-                <form className="step-form step-form-inline" onSubmit={handleMpin}>
-                  <input
-                    value={mpin}
-                    onChange={(event) => setMpin(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter MPIN"
-                    maxLength={6}
-                    required
-                    disabled={!otpComplete || mpinComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !otpComplete || mpin.length < 4 || mpinComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'mpin' ? 'Confirming MPIN...' : 'Confirm MPIN'}
-                  </button>
-                </form>
-              </section>
-            </div>
-
-            <div className="feedback-column">
-              {message ? <div className="message-banner">{message}</div> : null}
-              {error ? <div className="error-banner">{error}</div> : null}
-            </div>
+            ))}
           </div>
-        </section>
-      </section>
-    </main>
+
+          <div className="step-rail">
+            {(['Identity','Verification','MPIN'] as const).map((label, idx) => (
+              <div key={label} className={`step ${idx === currentStep ? 'active' : ''} ${idx < currentStep ? 'done' : ''}`}>
+                <span className="step-n">0{idx + 1}</span>
+                <span className="step-l">{label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="form-body">
+            {step === 'start' && (
+              <form onSubmit={handleStart}>
+                <div className="field-group-v2">
+                  <label className="field">
+                    <span className="field-label">Phone number</span>
+                    <div className="field-row">
+                      <span className="prefix">+91</span>
+                      <input autoFocus type="tel" inputMode="numeric" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g,'').slice(0,10))} placeholder="00000 00000" />
+                      <span className="field-hint">{phone.length}/10</span>
+                    </div>
+                    <span className="field-line"/>
+                  </label>
+                </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || phone.length < 10 ? 'disabled' : ''}`} disabled={activeAction !== null || phone.length < 10} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'phone' ? 'Sending OTP...' : 'Continue'}</span>
+                  <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                </button>
+                <div style={{ marginTop: 12, textAlign: 'center' }}>
+                  <button type="button" className="link-btn" onClick={handleDemoLogin}>Try demo mode</button>
+                </div>
+              </form>
+            )}
+
+            {step === 'otp' && (
+              <form onSubmit={handleOtp}>
+                <div className="field-group-v2">
+                  <span className="field-label center">One-time passcode sent to +91 {maskedPhone || 'xxxxx'}</span>
+                  <div className="otp-row">
+                    {otpDigits.map((digit, idx) => (
+                      <input key={idx} ref={(el) => { otpCells.current[idx] = el }} className="otp-cell" value={digit}
+                        onChange={(e) => handleOtpCell(idx, e.target.value.slice(-1))}
+                        onKeyDown={(e) => { if (e.key === 'Backspace' && !digit) otpCells.current[idx-1]?.focus() }}
+                        inputMode="numeric" maxLength={1} />
+                    ))}
+                  </div>
+                </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || otp.length < 4 ? 'disabled' : ''}`} disabled={activeAction !== null || otp.length < 4} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'otp' ? 'Verifying...' : 'Verify OTP'}</span>
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setStep('start')}>Back</button>
+              </form>
+            )}
+
+            {(step === 'mpin' || step === 'success') && (
+              <form onSubmit={handleMpin}>
+                <div className="field-group-v2">
+                  <span className="field-label center">Enter your MPIN</span>
+                  <div className="mpin-row">
+                    {[0,1,2,3].map((idx) => (
+                      <input key={idx} ref={(el) => { mpinCells.current[idx] = el }} className="mpin-cell" type="password"
+                        value={mpinDigits[idx] ?? ''}
+                        onChange={(e) => handleMpinCell(idx, e.target.value.slice(-1))}
+                        onKeyDown={(e) => { if (e.key === 'Backspace' && !mpinDigits[idx]) mpinCells.current[idx-1]?.focus() }}
+                        inputMode="numeric" maxLength={1} disabled={mpinComplete} />
+                    ))}
+                  </div>
+                  <span className="field-hint center">Encrypted end-to-end</span>
+                </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || mpin.length < 4 || mpinComplete ? 'disabled' : ''}`} disabled={activeAction !== null || mpin.length < 4 || mpinComplete} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'mpin' ? 'Entering platform...' : 'Enter Platform'}</span>
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setStep('otp')}>Back</button>
+              </form>
+            )}
+
+            {error ? <div className="err-banner">{error}</div> : null}
+            {message && !error ? <div className="msg-banner">{message}</div> : null}
+          </div>
+
+          <div className="panel-foot">
+            <span>
+              <svg viewBox="0 0 24 24" width={12} height={12} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x={4} y={10} width={16} height={11} rx={2}/><path d="M8 10V7a4 4 0 118 0v3"/></svg>
+              Zero-knowledge / 256-bit
+            </span>
+            <span className="dot-sep">/</span>
+            <span>SEBI / FINRA</span>
+          </div>
+        </div>
+      </main>
+
+      <footer className="auth-foot">
+        <span>© 2026 NubraOSS</span>
+        <span>Sovereign-grade infrastructure</span>
+        <span>Build 2.0 / mumbai-1</span>
+      </footer>
+    </div>
   )
 }
-
-

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import nubra_talib; print\\(dir\\(nubra_talib\\)\\)\")",
+      "Bash(python -c \"import nubra_talib, inspect; print\\(inspect.getsourcefile\\(nubra_talib.add_talib\\)\\)\")",
+      "Bash(python -c \"from nubra_python_sdk.marketdata.market_data import MarketData; from nubra_python_sdk.start_sdk import InitNubraSdk, NubraEnv; print\\('ok'\\)\")",
+      "Bash(python -c \"from app.main import app; print\\('OK', len\\(app.routes\\), 'routes'\\)\")"
+    ]
+  }
+}
