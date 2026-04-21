@@ -599,3 +599,53 @@ def fetch_with_warmup(
         fetch_start = _estimate_fetch_start(requested_start, interval, warmup_bars + missing * attempt_index)
 
     raise RuntimeError("Warmup fetch loop exited unexpectedly.")
+
+
+def fetch_preview_ohlcv(
+    *,
+    session_token: str,
+    device_id: str,
+    environment: str,
+    symbol: str,
+    exchange: str,
+    instrument_type: str,
+    interval: str,
+    bars: int,
+) -> pd.DataFrame:
+    normalized_symbol = symbol.strip().upper()
+    normalized_exchange = exchange.strip().upper()
+    normalized_instrument_type = instrument_type.strip().upper()
+    normalized_interval = interval.strip().lower()
+
+    if not normalized_symbol:
+        raise HTTPException(status_code=400, detail="A symbol is required for chart preview.")
+
+    fetch_end = pd.Timestamp.now(tz=IST_TZ)
+    try:
+        # Leave a modest buffer so the preview can survive sparse sessions/holidays.
+        fetch_start = _estimate_fetch_start(fetch_end, normalized_interval, bars + 24)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    df = _fetch_ohlcv_once(
+        session_token=session_token,
+        device_id=device_id,
+        environment=environment,
+        exchange=normalized_exchange,
+        instrument_type=normalized_instrument_type,
+        symbol=normalized_symbol,
+        interval=normalized_interval,
+        fetch_start=fetch_start,
+        fetch_end=fetch_end,
+        # Match the strategy historical path so preview bars are normalized the same way.
+        intra_day=False,
+    )
+    if df.empty:
+        raise HTTPException(status_code=404, detail=f"No OHLCV rows returned for {normalized_symbol}.")
+
+    return (
+        df.sort_values("timestamp")
+        .drop_duplicates(subset=["timestamp"], keep="last")
+        .tail(bars)
+        .reset_index(drop=True)
+    )

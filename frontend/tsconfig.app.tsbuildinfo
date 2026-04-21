@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/scalperlivechart.tsx","./src/components/strategybuilder.tsx","./src/hooks/usescalperlive.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/scalperlivechart.tsx","./src/components/strategybuilder.tsx","./src/components/strategypreviewchart.tsx","./src/hooks/usescalperlive.ts"],"version":"5.9.3"}

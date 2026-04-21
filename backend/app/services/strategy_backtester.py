@@ -830,8 +830,6 @@ def run_backtest(
     all_expressions = _all_expressions(strategy)
     warmup_bars = _warmup_bars_for(all_expressions, strategy.interval)
 
-    is_intraday_fetch = strategy.holding_type == "intraday" or interval_is_intraday(strategy.interval)
-
     instrument_results: list[InstrumentBacktestResult] = []
     for symbol in strategy.instruments:
         df, _warmup_rows, _attempts = fetch_with_warmup(
@@ -843,7 +841,9 @@ def run_backtest(
             requested_start=requested_start,
             requested_end=requested_end,
             warmup_bars=warmup_bars,
-            intra_day=is_intraday_fetch,
+            # Nubra needs intra_day=False here so intraday intervals can still return
+            # prior-session candles for indicator warmup/backtest history.
+            intra_day=False,
         )
         enriched = inject_indicator_columns(df, all_expressions)
         instrument_results.append(_run_instrument(strategy, enriched, symbol))

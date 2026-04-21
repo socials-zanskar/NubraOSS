@@ -22,6 +22,10 @@ from app.schemas import (
     StrategyInstrumentMetrics,
     StrategyInstrumentResult,
     StrategyPortfolioMetrics,
+    StrategyPreviewCandle,
+    StrategyPreviewChart,
+    StrategyPreviewRequest,
+    StrategyPreviewResponse,
     StrategyTrade,
     StrategyLiveStartRequest,
     StrategyLiveStartResponse,
@@ -50,6 +54,7 @@ from app.services.scalper_live_service import ScalperLiveSession
 from app.services.scalper_service import scalper_service
 from app.services.strategy_backtester import parse_strategy, run_backtest
 from app.services.strategy_catalog import catalog_payload
+from app.services.strategy_data import fetch_preview_ohlcv
 from app.services.strategy_live_service import strategy_live_service
 from app.services.tradingview_webhook_service import tradingview_webhook_service
 from app.services.tunnel_service import tunnel_service
@@ -252,6 +257,45 @@ def run_strategy_backtest(payload: StrategyBacktestRequest) -> StrategyBacktestR
         strategy_summary=result.strategy_summary,
         portfolio=portfolio_out,
         instruments=instruments_out,
+    )
+
+
+@app.post("/api/strategy/preview", response_model=StrategyPreviewResponse)
+def get_strategy_preview(payload: StrategyPreviewRequest) -> StrategyPreviewResponse:
+    df = fetch_preview_ohlcv(
+        session_token=payload.session_token,
+        device_id=payload.device_id,
+        environment=payload.environment,
+        symbol=payload.symbol,
+        exchange=payload.exchange,
+        instrument_type=payload.instrument_type,
+        interval=payload.interval,
+        bars=payload.bars,
+    )
+
+    candles = [
+        StrategyPreviewCandle(
+            epoch_ms=int(row.timestamp.timestamp() * 1000),
+            open=float(row.open),
+            high=float(row.high),
+            low=float(row.low),
+            close=float(row.close),
+            volume=None if row.volume is None or row.volume != row.volume else float(row.volume),
+        )
+        for row in df.itertuples(index=False)
+    ]
+
+    last_price = candles[-1].close if candles else None
+    return StrategyPreviewResponse(
+        status="success",
+        chart=StrategyPreviewChart(
+            instrument=payload.symbol.strip().upper(),
+            exchange=payload.exchange.strip().upper(),
+            instrument_type=payload.instrument_type.strip().upper(),
+            interval=payload.interval.strip().lower(),
+            last_price=last_price,
+            candles=candles,
+        ),
     )
 
 

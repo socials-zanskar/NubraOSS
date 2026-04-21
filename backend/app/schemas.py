@@ -306,6 +306,40 @@ class StrategyBacktestRequest(BaseModel):
     strategy: dict[str, Any]
 
 
+class StrategyPreviewRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    symbol: str = Field(min_length=1, max_length=128)
+    exchange: str = Field(default="NSE", min_length=2, max_length=16)
+    instrument_type: str = Field(default="STOCK", min_length=2, max_length=32)
+    interval: str = Field(min_length=1, max_length=16)
+    bars: int = Field(default=180, ge=20, le=500)
+
+
+class StrategyPreviewCandle(BaseModel):
+    epoch_ms: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None
+
+
+class StrategyPreviewChart(BaseModel):
+    instrument: str
+    exchange: str
+    instrument_type: str
+    interval: str
+    last_price: float | None
+    candles: list[StrategyPreviewCandle]
+
+
+class StrategyPreviewResponse(BaseModel):
+    status: Literal["success"]
+    chart: StrategyPreviewChart
+
+
 # ---- New backtest output types (mirrors nubra_backtester output schema) ----
 
 
