@@ -1,7 +1,13 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import nubraLogo from './assets/nubra-logo.png'
 import ScalperLiveChart from './components/ScalperLiveChart'
+import IndicatorBuilder from './components/IndicatorBuilder'
+import AutomatePanel from './components/AutomatePanel'
 import { useScalperLive } from './hooks/useScalperLive'
+import { useIndicators } from './hooks/useIndicators'
+import { useAutomation } from './hooks/useAutomation'
+import type { AutomateConfig } from './hooks/useAutomation'
+import type { OhlcvCandle } from './types/indicators'
 
 type Environment = 'PROD' | 'UAT'
 type Step = 'start' | 'otp' | 'mpin' | 'success'
@@ -12,6 +18,7 @@ type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
 type Indicator = 'EMA' | 'MA' | 'RSI'
 type OrderDeliveryType = 'ORDER_DELIVERY_TYPE_CNC' | 'ORDER_DELIVERY_TYPE_IDAY'
 type StrategySideMode = 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY'
+type ScalperTool = 'delta-neutral' | 'expiry-heatmap' | 'volume-breakout' | 'indicator-builder' | 'automate'
 
 interface StartResponse {
   flow_id: string
@@ -261,7 +268,10 @@ interface ScalperResolvedOptionPair {
   underlying: string
   exchange: string
   expiry: string | null
-  strike_price: number
+  ce_strike_price: number
+  pe_strike_price: number
+  call_ref_id: number | null
+  put_ref_id: number | null
   call_display_name: string
   put_display_name: string
   lot_size: number | null
@@ -275,6 +285,95 @@ interface ScalperSnapshotResponse {
   call_option: ScalperChartPanel
   put_option: ScalperChartPanel
   option_pair: ScalperResolvedOptionPair
+}
+
+interface ScalperOrderResponse {
+  status: 'success'
+  message: string
+  order_id: number | null
+  order_status: string | null
+  order_side: 'ORDER_SIDE_BUY' | 'ORDER_SIDE_SELL'
+  order_qty: number
+  order_price: number | null
+  lots: number
+  instrument_display_name: string
+}
+
+interface DeltaNeutralPairRow {
+  rank: number
+  underlying: string
+  exchange: string
+  expiry: string | null
+  ce_strike_price: number
+  pe_strike_price: number
+  call_display_name: string
+  put_display_name: string
+  spot_price: number | null
+  center_strike: number | null
+  width_points: number
+  call_delta: number | null
+  put_delta: number | null
+  net_delta: number | null
+  neutrality_score: number
+  lot_size: number | null
+  tick_size: number | null
+}
+
+interface DeltaNeutralPairsResponse {
+  status: 'success'
+  message: string
+  pairs: DeltaNeutralPairRow[]
+}
+
+interface ExpiryHeatmapRow {
+  strike_price: number
+  expiry: string | null
+  distance_from_spot: number
+  call_display_name: string | null
+  put_display_name: string | null
+  call_last_price: number | null
+  put_last_price: number | null
+  call_volume: number | null
+  put_volume: number | null
+  call_change_pct: number | null
+  put_change_pct: number | null
+  call_heat: number
+  put_heat: number
+}
+
+interface ExpiryHeatmapResponse {
+  status: 'success'
+  message: string
+  underlying: string
+  exchange: string
+  expiry: string | null
+  interval: Interval
+  spot_price: number | null
+  center_strike: number | null
+  rows: ExpiryHeatmapRow[]
+}
+
+interface ScalperVolumeBreakoutRow {
+  rank: number
+  underlying: string
+  display_name: string
+  exchange: string
+  last_price: number | null
+  current_volume: number | null
+  average_volume: number | null
+  volume_ratio: number
+  price_change_pct: number | null
+  breakout_strength: number
+  status_label: string
+  nearest_expiry: string | null
+  atm_strike: number | null
+}
+
+interface ScalperVolumeBreakoutResponse {
+  status: 'success'
+  message: string
+  lookback_days: number
+  rows: ScalperVolumeBreakoutRow[]
 }
 
 interface TradingViewWebhookStatusResponse {
@@ -368,61 +467,86 @@ interface VolumeBreakoutStartResponse {
 
 const API_BASE_URL = ''
 const SESSION_STORAGE_KEY = 'nubraoss.session'
+const SCALPER_SNAPSHOT_CACHE_PREFIX = 'nubraoss.scalperSnapshot'
 const dashboardTabs = ['Dashboard']
 
 const dashboardCards = [
   {
-    badge: 'NC',
     badgeClass: 'badge-indigo',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/>
+        <line x1="7" y1="6" x2="17" y2="6"/><line x1="5" y1="8" x2="12" y2="16"/><line x1="19" y1="8" x2="12" y2="16"/>
+      </svg>
+    ),
     title: 'No Code Algo',
     description: 'Visual strategy builder for creating and launching rule-based trading flows.',
     footer: 'Open No Code Algo',
     key: 'no-code' as const,
   },
   {
-    badge: 'VB',
     badgeClass: 'badge-blue',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="14" width="4" height="7" rx="1"/><rect x="9" y="9" width="4" height="12" rx="1"/><rect x="16" y="4" width="4" height="17" rx="1"/>
+        <polyline points="3,7 8,4 13,8 20,2" strokeWidth="2"/><polyline points="17,2 20,2 20,5" strokeWidth="2"/>
+      </svg>
+    ),
     title: 'Volume Breakout',
     description: 'Scan sector leaders and market-wide volume breakouts across major Indian stocks.',
     footer: 'Open Scanner',
     key: 'volume-breakout' as const,
   },
   {
-    badge: 'WS',
     badgeClass: 'badge-emerald',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+      </svg>
+    ),
     title: 'Webhook Strategies',
     description: 'Manage alert-driven trading strategies and view active automation status.',
     footer: 'Open Strategies',
     key: 'tradingview-webhook' as const,
   },
   {
-    badge: 'SC',
     badgeClass: 'badge-orange',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>
+        <line x1="12" y1="3" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="21"/>
+        <line x1="3" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="21" y2="12"/>
+      </svg>
+    ),
     title: 'Scalper',
     description: 'Dedicated intraday workspace for fast entries, quick decisions, and short-horizon execution flows.',
     footer: 'Open Scalper',
     key: 'scalper' as const,
   },
   {
-    badge: 'TB',
     badgeClass: 'badge-slate',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+        <line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/>
+        <polyline points="10,9 9,9 8,9"/>
+      </svg>
+    ),
     title: 'Trade Book',
     description: 'Review executed trades, fills, and trade-side summaries across the session.',
     footer: 'Open Trade Book',
   },
   {
-    badge: 'OC',
-    badgeClass: 'badge-orange',
+    badgeClass: 'badge-cyan',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+    ),
     title: 'Option Chain',
     description: 'Monitor live option chain data, strike context, and quick action flows.',
     footer: 'Open Option Chain',
-  },
-  {
-    badge: 'RT',
-    badgeClass: 'badge-cyan',
-    title: 'Risk & Tools',
-    description: 'Launch margin checks, analytics utilities, and internal risk helpers.',
-    footer: 'Open Tools',
   },
 ]
 
@@ -442,6 +566,68 @@ const demoSession: SuccessResponse = {
 const intervals: Interval[] = ['1m', '2m', '3m', '5m', '15m', '30m', '1h']
 const scalperUnderlyings = ['NIFTY', 'BANKNIFTY'] as const
 
+function scalperStrikeStep(underlying: string): number {
+  const normalized = underlying.trim().toUpperCase()
+  if (normalized === 'BANKNIFTY') return 100
+  if (normalized === 'NIFTY') return 50
+  return 10
+}
+
+function snapScalperStrike(price: number, underlying: string): string {
+  const step = scalperStrikeStep(underlying)
+  return String(Math.round(price / step) * step)
+}
+
+function defaultScalperStrike(underlying: string): string {
+  const u = underlying.trim().toUpperCase()
+  if (u === 'BANKNIFTY') return snapScalperStrike(56500, u)
+  if (u === 'NIFTY') return snapScalperStrike(24300, u)
+  // For stocks — use a sensible mid-range default; ATM sync will correct it on first snapshot
+  return snapScalperStrike(1000, u)
+}
+
+function adjustScalperStrike(value: string, underlying: string, direction: -1 | 1): string {
+  const step = scalperStrikeStep(underlying)
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultScalperStrike((underlying.toUpperCase() === 'BANKNIFTY' ? 'BANKNIFTY' : 'NIFTY'))
+  }
+  return String(Math.max(step, parsed + step * direction))
+}
+
+function scalperSnapshotCacheKeys(input: {
+  underlying: string
+  interval: string
+  ceStrike: string
+  peStrike: string
+  expiry: string
+}): { exact: string; generic: string } {
+  const exact = `${SCALPER_SNAPSHOT_CACHE_PREFIX}:${input.underlying}:${input.interval}:${input.ceStrike}:${input.peStrike}:${input.expiry || 'nearest'}`
+  const generic = `${SCALPER_SNAPSHOT_CACHE_PREFIX}:${input.underlying}:${input.interval}:latest`
+  return { exact, generic }
+}
+
+function loadCachedScalperSnapshot(keys: { exact: string; generic: string }): ScalperSnapshotResponse | null {
+  if (typeof window === 'undefined') return null
+  for (const key of [keys.exact, keys.generic]) {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) continue
+    try {
+      return JSON.parse(raw) as ScalperSnapshotResponse
+    } catch {
+      window.localStorage.removeItem(key)
+    }
+  }
+  return null
+}
+
+function saveCachedScalperSnapshot(keys: { exact: string; generic: string }, snapshot: ScalperSnapshotResponse): void {
+  if (typeof window === 'undefined') return
+  const payload = JSON.stringify(snapshot)
+  window.localStorage.setItem(keys.exact, payload)
+  window.localStorage.setItem(keys.generic, payload)
+}
+
 function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '--'
   return value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -453,6 +639,89 @@ function formatCompactVolume(value: number | null | undefined): string {
   if (Math.abs(value) >= 100000) return `${(value / 100000).toFixed(2)}L`
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)}K`
   return value.toFixed(0)
+}
+
+function normalizeExpiryValue(value: string | null | undefined): string | null {
+  const cleaned = value?.trim().toUpperCase() ?? ''
+  if (!cleaned) return null
+
+  const directFormats = ['%d %b %y', '%d %B %y', '%Y%m%d', '%d-%m-%Y', '%d-%b-%Y', '%d%b%y', '%d%b%Y', '%d%B%y', '%d%B%Y']
+  for (const format of directFormats) {
+    const parsed = tryParseExpiry(cleaned, format)
+    if (parsed) return parsed
+  }
+
+  const digits = cleaned.replace(/\D/g, '')
+  if (digits.length === 8) return digits
+  return cleaned
+}
+
+function tryParseExpiry(value: string, format: string): string | null {
+  const monthMap: Record<string, string> = {
+    JAN: '01',
+    FEB: '02',
+    MAR: '03',
+    APR: '04',
+    MAY: '05',
+    JUN: '06',
+    JUL: '07',
+    AUG: '08',
+    SEP: '09',
+    OCT: '10',
+    NOV: '11',
+    DEC: '12',
+  }
+
+  const normalized = value.toUpperCase()
+  const compact = normalized.replace(/[\s-]/g, '')
+
+  if (format === '%Y%m%d' && /^\d{8}$/.test(compact)) return compact
+
+  const alphaMatch = compact.match(/^(\d{2})([A-Z]{3,})(\d{2,4})$/)
+  if (alphaMatch && ['%d%b%y', '%d%b%Y', '%d%B%y', '%d%B%Y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = alphaMatch
+    const month = monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
+
+  const spacedMatch = normalized.match(/^(\d{2})\s+([A-Z]{3,})\s+(\d{2,4})$/)
+  if (spacedMatch && ['%d %b %y', '%d %B %y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = spacedMatch
+    const month = monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
+
+  const dashMatch = normalized.match(/^(\d{2})-([A-Z]{3,}|\d{2})-(\d{2,4})$/)
+  if (dashMatch && ['%d-%m-%Y', '%d-%b-%Y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = dashMatch
+    const month = /^\d{2}$/.test(rawMonth) ? rawMonth : monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
+
+  return null
+}
+
+function formatExpiryInputValue(value: string | null | undefined): string {
+  const normalized = normalizeExpiryValue(value)
+  if (!normalized) return ''
+  if (/^\d{8}$/.test(normalized)) {
+    const year = normalized.slice(2, 4)
+    const monthIndex = Number(normalized.slice(4, 6)) - 1
+    const day = normalized.slice(6, 8)
+    const month = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'][monthIndex]
+    return `${day} ${month} ${year}`
+  }
+  return normalized
+}
+
+function formatExpiryBadge(value: string | null | undefined): string {
+  return formatExpiryInputValue(value) || 'Nearest expiry'
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -483,7 +752,7 @@ function ScalperChart({ title, panel, accent }: { title: string; panel: ScalperC
         </div>
         <div className="scalper-chart-price">
           <strong>{formatPrice(panel?.last_price)}</strong>
-          <small>{panel ? `${panel.exchange} • ${panel.interval}` : 'Historical snapshot'}</small>
+          <small>{panel ? `${panel.exchange} - ${panel.interval}` : 'Historical snapshot'}</small>
         </div>
       </div>
 
@@ -613,6 +882,19 @@ function extractErrorMessage(payload: ApiErrorPayload | null | undefined, fallba
   return fallback
 }
 
+async function parseJsonResponse<T>(response: Response): Promise<T | null> {
+  const raw = await response.text()
+  if (!raw.trim()) {
+    return null
+  }
+
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
 function getSignalTone(signal: string | null): string {
   if (!signal) return 'neutral'
   if (signal.includes('BULLISH') || signal.includes('OVERSOLD')) return 'success'
@@ -624,7 +906,7 @@ function formatStrategySideMode(mode: StrategySideMode | null | undefined): stri
   if (mode === 'LONG_ONLY') return 'Long Only'
   if (mode === 'SHORT_ONLY') return 'Short Only'
   if (mode === 'BOTH') return 'Both'
-  return '—'
+  return '--'
 }
 
 export default function App() {
@@ -643,6 +925,39 @@ export default function App() {
   const [isSessionChecking, setIsSessionChecking] = useState<boolean>(() => Boolean(loadStoredSession()))
   const [publicIp, setPublicIp] = useState<string>('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [theme, setTheme] = useState<'light' | 'dark'>(
+    () => (window.localStorage.getItem('nubraoss.theme') as 'light' | 'dark') ?? 'light',
+  )
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    window.localStorage.setItem('nubraoss.theme', theme)
+  }, [theme])
+
+  function renderThemeToggle(extraClassName = '') {
+    return (
+      <div className={`theme-segmented-toggle${extraClassName ? ` ${extraClassName}` : ''}`} role="group" aria-label="Theme switcher">
+        <button
+          type="button"
+          className={theme === 'light' ? 'theme-segment active' : 'theme-segment'}
+          onClick={() => setTheme('light')}
+          aria-label="Switch to light mode"
+          title="Switch to light mode"
+        >
+          <span className="theme-icon theme-icon-sun" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={theme === 'dark' ? 'theme-segment active' : 'theme-segment'}
+          onClick={() => setTheme('dark')}
+          aria-label="Switch to dark mode"
+          title="Switch to dark mode"
+        >
+          <span className="theme-icon theme-icon-moon" aria-hidden="true" />
+        </button>
+      </div>
+    )
+  }
 
   const [instrument, setInstrument] = useState('')
   const [interval, setIntervalValue] = useState<Interval>('3m')
@@ -685,12 +1000,42 @@ export default function App() {
   const [tradingViewOrderAction, setTradingViewOrderAction] = useState<TradingViewAction>('BUY')
   const [tradingViewQuantity, setTradingViewQuantity] = useState('1')
   const [historySourceFilter, setHistorySourceFilter] = useState<'all' | 'test' | 'live'>('all')
-  const [scalperUnderlying, setScalperUnderlying] = useState<(typeof scalperUnderlyings)[number]>('NIFTY')
+  const [scalperUnderlying, setScalperUnderlying] = useState<string>('NIFTY')
   const [scalperInterval, setScalperInterval] = useState<Interval>('1m')
-  const [scalperStrikePrice, setScalperStrikePrice] = useState('24300')
+  const [scalperCeStrikePrice, setScalperCeStrikePrice] = useState('24300')
+  const [scalperPeStrikePrice, setScalperPeStrikePrice] = useState('24300')
   const [scalperExpiry, setScalperExpiry] = useState('')
+  const pendingScalperAtmSync = useRef<string | null>('NIFTY')
+  const pendingScalperExpiry = useRef<string | null>(null)
   const [scalperReconnectNonce, setScalperReconnectNonce] = useState(0)
   const [scalperValidating, setScalperValidating] = useState(false)
+  const [scalperSnapshot, setScalperSnapshot] = useState<ScalperSnapshotResponse | null>(null)
+  const [scalperSnapshotError, setScalperSnapshotError] = useState('')
+  const [scalperSnapshotNotice, setScalperSnapshotNotice] = useState('')
+  const [activeScalperTool, setActiveScalperTool] = useState<ScalperTool>('delta-neutral')
+  const [deltaNeutralPairs, setDeltaNeutralPairs] = useState<DeltaNeutralPairRow[]>([])
+  const [deltaNeutralMessage, setDeltaNeutralMessage] = useState('')
+  const [deltaNeutralLoading, setDeltaNeutralLoading] = useState(false)
+  const [expiryHeatmapRows, setExpiryHeatmapRows] = useState<ExpiryHeatmapRow[]>([])
+  const [expiryHeatmapMessage, setExpiryHeatmapMessage] = useState('')
+  const [expiryHeatmapLoading, setExpiryHeatmapLoading] = useState(false)
+  const [scalperVolumeBreakoutRows, setScalperVolumeBreakoutRows] = useState<ScalperVolumeBreakoutRow[]>([])
+  const [scalperVolumeBreakoutMessage, setScalperVolumeBreakoutMessage] = useState('')
+  const [scalperVolumeBreakoutLoading, setScalperVolumeBreakoutLoading] = useState(false)
+  const [scalperVolumeBreakoutLookbackDays, setScalperVolumeBreakoutLookbackDays] = useState<3 | 5 | 10 | 20>(5)
+  const [scalperCallLots, setScalperCallLots] = useState('1')
+  const [scalperPutLots, setScalperPutLots] = useState('1')
+  const [scalperTradeError, setScalperTradeError] = useState('')
+  const [scalperTradeMessage, setScalperTradeMessage] = useState('')
+  const [scalperTradeAction, setScalperTradeAction] = useState<'buy-ce' | 'sell-ce' | 'buy-pe' | 'sell-pe' | null>(null)
+  const [automateEnabled, setAutomateEnabled] = useState(false)
+  const [automateConfig, setAutomateConfig] = useState<AutomateConfig>({
+    panel: 'call_option',
+    direction: 'both',
+    lots: '1',
+    maxTrades: '10',
+  })
+  const [loginInitialized, setLoginInitialized] = useState(false)
   const previousAlertCount = useRef(0)
 
   const phoneComplete = flowId.length > 0
@@ -698,27 +1043,170 @@ export default function App() {
   const mpinComplete = step === 'success'
   const derivedDeviceId = session?.device_id ?? (phone ? `Nubra-OSS-${phone}` : 'Nubra-OSS-<phone>')
 
-  // ── Live scalper hook ─────────────────────────────────────────────────────
-  const parsedScalperStrike = Number(scalperStrikePrice)
+  // â”€â”€ Live scalper hook â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const parsedScalperCeStrike = Number(scalperCeStrikePrice)
+  const parsedScalperPeStrike = Number(scalperPeStrikePrice)
+  const normalizedScalperExpiry = normalizeExpiryValue(scalperExpiry)
   const scalperLive = useScalperLive({
     enabled:
       view === 'scalper' &&
       !!session &&
       !session.is_demo &&
       !scalperValidating &&
-      Number.isFinite(parsedScalperStrike) &&
-      parsedScalperStrike > 0,
+      Number.isFinite(parsedScalperCeStrike) &&
+      parsedScalperCeStrike > 0 &&
+      Number.isFinite(parsedScalperPeStrike) &&
+      parsedScalperPeStrike > 0,
     session_token: session?.access_token ?? '',
     device_id: derivedDeviceId,
     environment: session?.environment ?? 'PROD',
     underlying: scalperUnderlying,
     exchange: 'NSE',
     interval: scalperInterval,
-    strike_price: parsedScalperStrike || 1,
-    expiry: scalperExpiry.trim() || null,
+    ce_strike_price: parsedScalperCeStrike || 1,
+    pe_strike_price: parsedScalperPeStrike || 1,
+    expiry: normalizedScalperExpiry,
     lookback_days: 5,
     reconnect_nonce: scalperReconnectNonce,
   })
+  const scalperPanelMeta = scalperLive.panelMeta
+  const scalperOptionPair = scalperLive.optionPair ?? scalperSnapshot?.option_pair ?? null
+
+  // ── Indicator builder ────────────────────────────────────────────────────────
+  const indicatorHook = useIndicators()
+  const { liveVersion, liveCandlesRef } = scalperLive
+
+  // Convert live WebSocket candles (LiveCandle[]) to OhlcvCandle[] for indicator compute engine.
+  // The chart renders all candle times as (epochSeconds + IST_OFFSET_S) via toChartTime in
+  // useScalperLive / ScalperLiveChart. Indicator overlay points must use the same offset so
+  // they align with the correct bars. IST_OFFSET_S = 5.5 * 3600 = 19800 seconds.
+  const IST_OFFSET_S = 19800
+  function liveToOhlcv(panel: 'underlying' | 'call_option' | 'put_option'): OhlcvCandle[] {
+    const candles = liveCandlesRef.current[panel]
+    if (!candles.length) {
+      // Fallback to snapshot candles when live feed hasn't initialised yet
+      const snap =
+        panel === 'call_option'
+          ? scalperSnapshot?.call_option.candles
+          : panel === 'put_option'
+            ? scalperSnapshot?.put_option.candles
+            : scalperSnapshot?.underlying.candles
+      if (!snap) return []
+      return snap.map((c) => ({
+        time: Math.floor(c.epoch_ms / 1000) + IST_OFFSET_S,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume ?? 0,
+      }))
+    }
+    return candles.map((c) => ({
+      time: c.time + IST_OFFSET_S,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    }))
+  }
+
+  const indicatorOverlaysCall = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('call_option')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.call_option.candles],
+  )
+  const indicatorOverlaysUnderlying = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('underlying')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.underlying.candles],
+  )
+  const indicatorOverlaysPut = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('put_option')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.put_option.candles],
+  )
+
+  // Compute signals exclusively on *closed* candles for automation.
+  // The last entry in liveCandlesRef is always the currently forming candle — we slice it off
+  // so automation only reacts to a candle after it has fully closed.
+  const automationSignals = useMemo(() => {
+    const panel = automateConfig.panel
+    const raw = liveCandlesRef.current[panel]
+    const IST_OFFSET_S = 19800
+    let ohlcv: { time: number; open: number; high: number; low: number; close: number; volume: number }[]
+    if (raw.length > 0) {
+      // Drop the last (forming) candle — only closed candles
+      const closed = raw.length > 1 ? raw.slice(0, -1) : raw
+      ohlcv = closed.map((c) => ({
+        time: c.time + IST_OFFSET_S,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }))
+    } else {
+      // Fallback to snapshot candles (these are already all closed)
+      const snap =
+        panel === 'call_option'
+          ? scalperSnapshot?.call_option.candles
+          : panel === 'put_option'
+            ? scalperSnapshot?.put_option.candles
+            : scalperSnapshot?.underlying.candles
+      ohlcv = (snap ?? []).map((c) => ({
+        time: Math.floor(c.epoch_ms / 1000) + IST_OFFSET_S,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume ?? 0,
+      }))
+    }
+    return indicatorHook.computeAll(ohlcv).signals
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [automateConfig.panel, liveVersion, indicatorHook.indicators, scalperSnapshot])
+
+  const automationHasSignals = useMemo(
+    () =>
+      indicatorHook.indicators.some(
+        (ind) =>
+          ind.enabled &&
+          (ind.signal.buyCondition !== null || ind.signal.sellCondition !== null),
+      ),
+    [indicatorHook.indicators],
+  )
+
+  const automation = useAutomation({
+    enabled: automateEnabled,
+    config: automateConfig,
+    session: session
+      ? { session_token: session.access_token, device_id: session.device_id, environment: session.environment }
+      : null,
+    optionPair: scalperOptionPair
+      ? {
+          call_ref_id: scalperOptionPair.call_ref_id,
+          put_ref_id: scalperOptionPair.put_ref_id,
+          call_display_name: scalperOptionPair.call_display_name,
+          put_display_name: scalperOptionPair.put_display_name,
+          lot_size: scalperOptionPair.lot_size,
+          tick_size: scalperOptionPair.tick_size,
+          exchange: scalperOptionPair.exchange,
+        }
+      : null,
+    panelSignals: automationSignals,
+    callLtp: scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null,
+    putLtp: scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null,
+    underlyingLtp: scalperPanelMeta?.underlying?.last_price ?? scalperSnapshot?.underlying.last_price ?? null,
+    liveVersion,
+    apiBase: API_BASE_URL,
+  })
+
+  function sanitizePositiveInteger(value: string, fallback = 1): number {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+    return Math.max(1, Math.floor(parsed))
+  }
 
   const helperText = useMemo(() => {
     if (step === 'otp') return `OTP sent to ${maskedPhone || 'your number'}.`
@@ -731,6 +1219,7 @@ export default function App() {
     setSession(null)
     setView('login')
     setStep('start')
+    setLoginInitialized(false)
     setFlowId('')
     setOtp('')
     setMpin('')
@@ -782,9 +1271,67 @@ export default function App() {
 
       setScalperReconnectNonce((value) => value + 1)
     } catch (err) {
-      resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
+      setError(err instanceof Error ? err.message : 'Unable to validate your session.')
     } finally {
       setScalperValidating(false)
+    }
+  }
+
+  async function submitScalperOrder(optionLeg: 'CE' | 'PE', orderSide: 'ORDER_SIDE_BUY' | 'ORDER_SIDE_SELL') {
+    if (!session || session.is_demo || !scalperOptionPair) return
+
+    const isCall = optionLeg === 'CE'
+    const lots = sanitizePositiveInteger(isCall ? scalperCallLots : scalperPutLots)
+    const instrumentRefId = isCall ? scalperOptionPair.call_ref_id : scalperOptionPair.put_ref_id
+    const instrumentDisplayName = isCall ? scalperOptionPair.call_display_name : scalperOptionPair.put_display_name
+    const ltpPrice = isCall
+      ? (scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null)
+      : (scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null)
+
+    if (!instrumentRefId) {
+      setScalperTradeError(`Unable to resolve ${optionLeg} contract metadata for order placement.`)
+      return
+    }
+
+    const actionKey =
+      orderSide === 'ORDER_SIDE_BUY'
+        ? (isCall ? 'buy-ce' : 'buy-pe')
+        : (isCall ? 'sell-ce' : 'sell-pe')
+    setScalperTradeAction(actionKey)
+    setScalperTradeError('')
+    setScalperTradeMessage('')
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/scalper/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: session.access_token,
+          device_id: session.device_id,
+          environment: session.environment,
+          instrument_ref_id: instrumentRefId,
+          instrument_display_name: instrumentDisplayName,
+          option_leg: optionLeg,
+          order_side: orderSide,
+          lots,
+          lot_size: scalperOptionPair.lot_size ?? 1,
+          tick_size: scalperOptionPair.tick_size ?? 1,
+          ltp_price: ltpPrice,
+          order_delivery_type: 'ORDER_DELIVERY_TYPE_IDAY',
+          exchange: scalperOptionPair.exchange,
+          tag: `nubraoss_scalper_${optionLeg.toLowerCase()}`,
+        }),
+      })
+      const data = (await response.json()) as ScalperOrderResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to place the scalper order.'))
+      }
+      const result = data as ScalperOrderResponse
+      setScalperTradeMessage(`${result.message} Order ${result.order_id ?? ''} ${result.order_status ?? ''}`.trim())
+    } catch (err) {
+      setScalperTradeError(err instanceof Error ? err.message : 'Unable to place the scalper order.')
+    } finally {
+      setScalperTradeAction(null)
     }
   }
 
@@ -833,7 +1380,8 @@ export default function App() {
         }
       } catch (err) {
         if (cancelled) return
-        resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
+        setError(err instanceof Error ? err.message : 'Unable to validate your session.')
+        setIsSessionChecking(false)
         return
       }
       if (!cancelled) {
@@ -882,16 +1430,6 @@ export default function App() {
 
     fetchPublicIp()
   }, [session])
-
-  useEffect(() => {
-    if (view !== 'scalper' || !session || session.is_demo) return
-    if (!scalperLive.error) return
-
-    const normalizedError = scalperLive.error.toLowerCase()
-    if (!normalizedError.includes('expired') && !normalizedError.includes('log in again')) return
-
-    resetSession('Your Nubra session expired. Please log in again to restore the live scalper feed.')
-  }, [scalperLive.error, session, view])
 
   useEffect(() => {
     if (!session || session.is_demo) return
@@ -1206,9 +1744,316 @@ export default function App() {
   }, [view, session, instrument, derivedDeviceId])
 
   useEffect(() => {
-    setScalperStrikePrice(scalperUnderlying === 'BANKNIFTY' ? '56500' : '24300')
-    setScalperExpiry('')
+    const nextStrike = defaultScalperStrike(scalperUnderlying)
+    pendingScalperAtmSync.current = scalperUnderlying
+    setScalperCeStrikePrice(nextStrike)
+    setScalperPeStrikePrice(nextStrike)
+    // If a breakout card navigation set a specific expiry, use it; otherwise reset.
+    if (pendingScalperExpiry.current !== null) {
+      setScalperExpiry(pendingScalperExpiry.current)
+      pendingScalperExpiry.current = null
+    } else {
+      setScalperExpiry('')
+    }
   }, [scalperUnderlying])
+
+  useEffect(() => {
+    if (view !== 'scalper' || pendingScalperAtmSync.current !== scalperUnderlying) return
+    if (!scalperSnapshot || scalperSnapshot.underlying.last_price == null) return
+    const instrumentName = `${scalperSnapshot.underlying.instrument} ${scalperSnapshot.underlying.display_name}`.toUpperCase()
+    if (!instrumentName.includes(scalperUnderlying)) return
+    const atmStrike = snapScalperStrike(scalperSnapshot.underlying.last_price, scalperUnderlying)
+    setScalperCeStrikePrice(atmStrike)
+    setScalperPeStrikePrice(atmStrike)
+    pendingScalperAtmSync.current = null
+  }, [view, scalperSnapshot, scalperUnderlying])
+
+  useEffect(() => {
+    if (view !== 'scalper') return
+    const resolvedExpiry = formatExpiryInputValue(scalperOptionPair?.expiry)
+    if (!resolvedExpiry) return
+    if (resolvedExpiry !== formatExpiryInputValue(scalperExpiry)) {
+      setScalperExpiry(resolvedExpiry)
+    }
+  }, [view, scalperOptionPair?.expiry, scalperExpiry])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setScalperSnapshot(null)
+      setScalperSnapshotError('')
+      setScalperSnapshotNotice('')
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+    const cacheKeys = scalperSnapshotCacheKeys({
+      underlying: scalperUnderlying,
+      interval: scalperInterval,
+      ceStrike: scalperCeStrikePrice,
+      peStrike: scalperPeStrikePrice,
+      expiry: normalizedScalperExpiry ?? '',
+    })
+
+    async function loadScalperSnapshot() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/snapshot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: activeSession.access_token,
+            device_id: derivedDeviceId,
+            environment: activeSession.environment,
+            underlying: scalperUnderlying,
+            exchange: 'NSE',
+            interval: scalperInterval,
+            ce_strike_price: parsedScalperCeStrike || 1,
+            pe_strike_price: parsedScalperPeStrike || 1,
+            expiry: normalizedScalperExpiry,
+            lookback_days: 5,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as ScalperSnapshotResponse | ApiErrorPayload | null
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Unable to load scalper snapshot.'))
+        }
+        if (controller.signal.aborted) return
+        const snapshot = payload as ScalperSnapshotResponse
+        setScalperSnapshot(snapshot)
+        setScalperSnapshotError('')
+        setScalperSnapshotNotice('')
+        saveCachedScalperSnapshot(cacheKeys, snapshot)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        const cachedSnapshot = loadCachedScalperSnapshot(cacheKeys)
+        if (cachedSnapshot) {
+          setScalperSnapshot(cachedSnapshot)
+          setScalperSnapshotError('')
+          setScalperSnapshotNotice('Showing the last saved trading-day snapshot because live/weekend data is unavailable.')
+          return
+        }
+        setScalperSnapshot(null)
+        setScalperSnapshotNotice('')
+        setScalperSnapshotError(err instanceof Error ? err.message : 'Unable to load scalper snapshot.')
+      }
+    }
+
+    void loadScalperSnapshot()
+
+    return () => controller.abort()
+  }, [
+    view,
+    session,
+    derivedDeviceId,
+    scalperUnderlying,
+    scalperInterval,
+    parsedScalperCeStrike,
+    parsedScalperPeStrike,
+    normalizedScalperExpiry,
+  ])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setDeltaNeutralPairs([])
+      setDeltaNeutralMessage('')
+      setDeltaNeutralLoading(false)
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+
+    async function loadDeltaNeutralPairs() {
+      setDeltaNeutralLoading(true)
+      setDeltaNeutralMessage('')
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/delta-neutral`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: activeSession.access_token,
+            device_id: derivedDeviceId,
+            environment: activeSession.environment,
+            underlying: scalperUnderlying,
+            exchange: 'NSE',
+            expiry: normalizedScalperExpiry,
+            limit: 5,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as DeltaNeutralPairsResponse | ApiErrorPayload | null
+
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Failed to load delta neutral pairs.'))
+        }
+
+        const pairs = ((payload as DeltaNeutralPairsResponse | null)?.pairs ?? []).slice(0, 5)
+        if (controller.signal.aborted) return
+
+        setDeltaNeutralPairs(pairs)
+        setDeltaNeutralMessage(
+          pairs.length > 0
+            ? 'Top CE / PE combinations ranked by real Nubra option delta balance for the selected underlying.'
+            : 'No pairs available right now. Adjust expiry or reload the live session.',
+        )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        const nextMessage = err instanceof Error ? err.message : 'Failed to load delta neutral pairs.'
+        setDeltaNeutralPairs([])
+        setDeltaNeutralMessage(nextMessage)
+      } finally {
+        if (!controller.signal.aborted) {
+          setDeltaNeutralLoading(false)
+        }
+      }
+    }
+
+    void loadDeltaNeutralPairs()
+
+    return () => controller.abort()
+  }, [view, session, derivedDeviceId, scalperUnderlying, normalizedScalperExpiry])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setExpiryHeatmapRows([])
+      setExpiryHeatmapMessage('')
+      setExpiryHeatmapLoading(false)
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+
+    async function loadExpiryHeatmap() {
+      setExpiryHeatmapLoading(true)
+      setExpiryHeatmapMessage('')
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/expiry-heatmap`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: activeSession.access_token,
+            device_id: derivedDeviceId,
+            environment: activeSession.environment,
+            underlying: scalperUnderlying,
+            exchange: 'NSE',
+            interval: scalperInterval,
+            expiry: normalizedScalperExpiry,
+            limit: 9,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as ExpiryHeatmapResponse | ApiErrorPayload | null
+
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Failed to load expiry heatmap.'))
+        }
+
+        const rows = (payload as ExpiryHeatmapResponse | null)?.rows ?? []
+        if (controller.signal.aborted) return
+
+        setExpiryHeatmapRows(rows)
+        setExpiryHeatmapMessage(
+          rows.length > 0
+            ? 'Heatmap intensity is based on the latest available CE / PE snapshot around ATM.'
+            : 'No expiry heatmap rows are available yet.',
+        )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        const nextMessage = err instanceof Error ? err.message : 'Failed to load expiry heatmap.'
+        setExpiryHeatmapRows([])
+        setExpiryHeatmapMessage(nextMessage)
+      } finally {
+        if (!controller.signal.aborted) {
+          setExpiryHeatmapLoading(false)
+        }
+      }
+    }
+
+    void loadExpiryHeatmap()
+    const refreshId = window.setInterval(() => {
+      void loadExpiryHeatmap()
+    }, 20000)
+
+    return () => {
+      controller.abort()
+      window.clearInterval(refreshId)
+    }
+  }, [view, session, derivedDeviceId, scalperUnderlying, normalizedScalperExpiry, scalperInterval])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setScalperVolumeBreakoutRows([])
+      setScalperVolumeBreakoutMessage('')
+      setScalperVolumeBreakoutLoading(false)
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+
+    async function loadScalperVolumeBreakout() {
+      setScalperVolumeBreakoutLoading(true)
+      setScalperVolumeBreakoutMessage('')
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/volume-breakout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_token: activeSession.access_token,
+            device_id: derivedDeviceId,
+            environment: activeSession.environment,
+            exchange: 'NSE',
+            interval: scalperInterval,
+            lookback_days: scalperVolumeBreakoutLookbackDays,
+            limit: 30,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as ScalperVolumeBreakoutResponse | ApiErrorPayload | null
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Failed to load volume breakout finder.'))
+        }
+
+        const rows = (payload as ScalperVolumeBreakoutResponse | null)?.rows ?? []
+        if (controller.signal.aborted) return
+
+        setScalperVolumeBreakoutRows(rows)
+          setScalperVolumeBreakoutMessage(
+            rows.length > 0
+              ? `Current ${scalperInterval} candle volume is compared against the average of all ${scalperInterval} candles from the previous ${scalperVolumeBreakoutLookbackDays} trading days, with historical fallback after market hours.`
+              : 'No breakout candidates are available for this trading-day baseline yet.',
+          )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        const nextMessage = err instanceof Error ? err.message : 'Failed to load volume breakout finder.'
+        setScalperVolumeBreakoutRows([])
+        setScalperVolumeBreakoutMessage(nextMessage)
+      } finally {
+        if (!controller.signal.aborted) {
+          setScalperVolumeBreakoutLoading(false)
+        }
+      }
+    }
+
+    void loadScalperVolumeBreakout()
+    const refreshId = window.setInterval(() => {
+      void loadScalperVolumeBreakout()
+    }, 30000)
+
+    return () => {
+      controller.abort()
+      window.clearInterval(refreshId)
+    }
+  }, [view, session, derivedDeviceId, scalperInterval, scalperVolumeBreakoutLookbackDays])
 
   async function handleStart(event: FormEvent) {
     event.preventDefault()
@@ -1222,9 +2067,12 @@ export default function App() {
         body: JSON.stringify({ phone, environment }),
       })
 
-      const data = (await response.json()) as StartResponse | ApiErrorPayload
+      const data = (await parseJsonResponse<StartResponse | ApiErrorPayload>(response)) as StartResponse | ApiErrorPayload | null
       if (!response.ok) {
         throw new Error(extractErrorMessage(data, 'Unable to start login flow.'))
+      }
+      if (!data) {
+        throw new Error('Login service returned an empty response. Please try again.')
       }
 
       const result = data as StartResponse
@@ -1251,9 +2099,12 @@ export default function App() {
         body: JSON.stringify({ flow_id: flowId, otp }),
       })
 
-      const data = (await response.json()) as OtpResponse | ApiErrorPayload
+      const data = (await parseJsonResponse<OtpResponse | ApiErrorPayload>(response)) as OtpResponse | ApiErrorPayload | null
       if (!response.ok) {
         throw new Error(extractErrorMessage(data, 'Unable to verify OTP.'))
+      }
+      if (!data) {
+        throw new Error('OTP verification returned an empty response. Please try again.')
       }
 
       setMessage((data as OtpResponse).message)
@@ -1277,9 +2128,12 @@ export default function App() {
         body: JSON.stringify({ flow_id: flowId, mpin }),
       })
 
-      const data = (await response.json()) as SuccessResponse | ApiErrorPayload
+      const data = (await parseJsonResponse<SuccessResponse | ApiErrorPayload>(response)) as SuccessResponse | ApiErrorPayload | null
       if (!response.ok) {
         throw new Error(extractErrorMessage(data, 'Unable to verify MPIN.'))
+      }
+      if (!data) {
+        throw new Error('MPIN verification returned an empty response. Please try again.')
       }
 
       const result = data as SuccessResponse
@@ -1296,6 +2150,7 @@ export default function App() {
   }
 
   function handleDemoLogin() {
+    setLoginInitialized(true)
     setSession(demoSession)
     setEnvironment(demoSession.environment)
     setView('dashboard')
@@ -1701,6 +2556,7 @@ export default function App() {
           </nav>
 
           <div className="dashboard-actions">
+            {renderThemeToggle('dashboard-theme-toggle')}
             <div className="profile-menu">
               <button
                 type="button"
@@ -1926,12 +2782,12 @@ export default function App() {
                 <div className="status-list">
                   <div><span>Status</span><strong>{noCodeStatus?.running ? 'Running' : 'Stopped'}</strong></div>
                   <div><span>Market</span><strong>{noCodeStatus?.market_status ?? 'idle'}</strong></div>
-                  <div><span>Instrument</span><strong>{noCodeStatus?.instrument ?? 'â€”'}</strong></div>
-                  <div><span>Interval</span><strong>{noCodeStatus?.interval ?? 'â€”'}</strong></div>
-                  <div><span>Indicator</span><strong>{noCodeStatus?.indicator ?? 'â€”'}</strong></div>
+                  <div><span>Instrument</span><strong>{noCodeStatus?.instrument ?? '--'}</strong></div>
+                  <div><span>Interval</span><strong>{noCodeStatus?.interval ?? '--'}</strong></div>
+                  <div><span>Indicator</span><strong>{noCodeStatus?.indicator ?? '--'}</strong></div>
                   <div><span>Strategy Side</span><strong>{formatStrategySideMode(noCodeStatus?.strategy_side_mode)}</strong></div>
-                  <div><span>Last Run</span><strong>{noCodeStatus?.last_run_ist ?? 'â€”'}</strong></div>
-                  <div><span>Next Run</span><strong>{noCodeStatus?.next_run_ist ?? 'â€”'}</strong></div>
+                  <div><span>Last Run</span><strong>{noCodeStatus?.last_run_ist ?? '--'}</strong></div>
+                  <div><span>Next Run</span><strong>{noCodeStatus?.next_run_ist ?? '--'}</strong></div>
                 </div>
               </article>
 
@@ -2615,7 +3471,7 @@ export default function App() {
   }
 
   if (view === 'scalper') {
-  const { status: liveStatus, error: liveError, connected: liveConnected, optionPair, panelMeta, registerPanel } = scalperLive
+  const { status: liveStatus, error: liveError, connected: liveConnected, registerPanel } = scalperLive
   const scalperFeedLabel = scalperValidating
     ? 'Checking Session'
     : liveConnected
@@ -2630,9 +3486,45 @@ export default function App() {
       : liveError
         ? '#ef4444'
         : '#64748b'
-    const underlyingMeta = panelMeta?.underlying ?? null
-    const callMeta = panelMeta?.call_option ?? null
-    const putMeta = panelMeta?.put_option ?? null
+    const underlyingMeta = scalperPanelMeta?.underlying ?? (scalperSnapshot
+      ? {
+          instrument: scalperSnapshot.underlying.instrument,
+          display_name: scalperSnapshot.underlying.display_name,
+          exchange: scalperSnapshot.underlying.exchange,
+          instrument_type: scalperSnapshot.underlying.instrument_type,
+          interval: scalperSnapshot.underlying.interval,
+          last_price: scalperSnapshot.underlying.last_price,
+        }
+      : null)
+    const callMeta = scalperPanelMeta?.call_option ?? (scalperSnapshot
+      ? {
+          instrument: scalperSnapshot.call_option.instrument,
+          display_name: scalperSnapshot.call_option.display_name,
+          exchange: scalperSnapshot.call_option.exchange,
+          instrument_type: scalperSnapshot.call_option.instrument_type,
+          interval: scalperSnapshot.call_option.interval,
+          last_price: scalperSnapshot.call_option.last_price,
+        }
+      : null)
+    const putMeta = scalperPanelMeta?.put_option ?? (scalperSnapshot
+      ? {
+          instrument: scalperSnapshot.put_option.instrument,
+          display_name: scalperSnapshot.put_option.display_name,
+          exchange: scalperSnapshot.put_option.exchange,
+          instrument_type: scalperSnapshot.put_option.instrument_type,
+          interval: scalperSnapshot.put_option.interval,
+          last_price: scalperSnapshot.put_option.last_price,
+        }
+      : null)
+    const activeOptionPair = scalperOptionPair
+    const lotSize = activeOptionPair?.lot_size ?? 1
+    const tickSize = activeOptionPair?.tick_size ?? 1
+    const callLots = sanitizePositiveInteger(scalperCallLots)
+    const putLots = sanitizePositiveInteger(scalperPutLots)
+    const callEstimatedValue = (callMeta?.last_price ?? 0) * lotSize * callLots
+    const putEstimatedValue = (putMeta?.last_price ?? 0) * lotSize * putLots
+    const callTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.call_ref_id || scalperValidating
+    const putTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.put_ref_id || scalperValidating
 
     return (
       <main className="dashboard-shell">
@@ -2646,7 +3538,7 @@ export default function App() {
               </button>
               <h1>Scalper</h1>
               <p>
-                Live three-panel workspace — underlying on the left, matched call / put charts on the right.
+                Live three-panel workspace - underlying on the left, matched call / put charts on the right.
                 Charts tick in real time via Nubra market data.
               </p>
             </div>
@@ -2655,7 +3547,7 @@ export default function App() {
               <span className="pill">{scalperUnderlying}</span>
               <span className="pill pill-dark">{scalperInterval}</span>
               <span className="pill" style={{ color: scalperFeedTone }}>
-                {scalperValidating ? '◌ Checking' : liveConnected ? '● Live' : liveError ? '● Feed Error' : '○ Connecting'}
+                {scalperValidating ? 'Checking' : liveConnected ? 'Live' : liveError ? 'Feed Error' : 'Connecting'}
               </span>
             </div>
           </section>
@@ -2669,15 +3561,22 @@ export default function App() {
             </section>
           ) : (
             <>
+              {scalperSnapshotError && !liveConnected ? <section className="error-banner dashboard-error">{scalperSnapshotError}</section> : null}
+              {scalperSnapshotNotice && !liveConnected ? <section className="message-banner">{scalperSnapshotNotice}</section> : null}
               <section className="scalper-terminal">
                 <div className="scalper-toolbar">
                   <div className="scalper-toolbar-group">
                     <label className="scalper-field">
                       <span>Underlying</span>
-                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value as (typeof scalperUnderlyings)[number])}>
-                        {scalperUnderlyings.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
+                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value)}>
+                        {(scalperUnderlyings as readonly string[]).includes(scalperUnderlying)
+                          ? scalperUnderlyings.map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))
+                          : [...scalperUnderlyings, scalperUnderlying].map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))
+                        }
                       </select>
                     </label>
                     <label className="scalper-field">
@@ -2689,12 +3588,28 @@ export default function App() {
                       </select>
                     </label>
                     <label className="scalper-field">
-                      <span>Strike</span>
-                      <input
-                        value={scalperStrikePrice}
-                        onChange={(event) => setScalperStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
-                        placeholder="24300"
-                      />
+                      <span>CE Strike</span>
+                      <div className="scalper-step-input">
+                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <input
+                          value={scalperCeStrikePrice}
+                          onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          placeholder="24300"
+                        />
+                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                      </div>
+                    </label>
+                    <label className="scalper-field">
+                      <span>PE Strike</span>
+                      <div className="scalper-step-input">
+                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <input
+                          value={scalperPeStrikePrice}
+                          onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          placeholder="24300"
+                        />
+                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                      </div>
                     </label>
                     <label className="scalper-field">
                       <span>Expiry</span>
@@ -2709,8 +3624,8 @@ export default function App() {
                   <div className="scalper-toolbar-side">
                     <div className="scalper-status-stack">
                       <span className="scalper-status-pill" style={{ color: scalperFeedTone }}>{scalperFeedLabel}</span>
-                      <span className="scalper-status-pill">{optionPair?.expiry ?? 'No expiry'}</span>
-                      <span className="scalper-status-pill">Lot {optionPair?.lot_size ?? '--'}</span>
+                      <span className="scalper-status-pill">{formatExpiryBadge(activeOptionPair?.expiry)}</span>
+                      <span className="scalper-status-pill">Lot {activeOptionPair?.lot_size ?? '--'}</span>
                     </div>
                     <button
                       type="button"
@@ -2738,7 +3653,11 @@ export default function App() {
                     lastPrice={callMeta?.last_price ?? null}
                     interval={callMeta?.interval ?? scalperInterval}
                     exchange={callMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={scalperPanelMeta?.call_option ? undefined : scalperSnapshot?.call_option.candles}
+                    overlays={indicatorOverlaysCall.overlays}
+                    signals={indicatorOverlaysCall.signals}
+                    height={306}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                   <ScalperLiveChart
@@ -2749,7 +3668,11 @@ export default function App() {
                     lastPrice={underlyingMeta?.last_price ?? null}
                     interval={underlyingMeta?.interval ?? scalperInterval}
                     exchange={underlyingMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={scalperPanelMeta?.underlying ? undefined : scalperSnapshot?.underlying.candles}
+                    overlays={indicatorOverlaysUnderlying.overlays}
+                    signals={indicatorOverlaysUnderlying.signals}
+                    height={306}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                   <ScalperLiveChart
@@ -2760,16 +3683,133 @@ export default function App() {
                     lastPrice={putMeta?.last_price ?? null}
                     interval={putMeta?.interval ?? scalperInterval}
                     exchange={putMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={scalperPanelMeta?.put_option ? undefined : scalperSnapshot?.put_option.candles}
+                    overlays={indicatorOverlaysPut.overlays}
+                    signals={indicatorOverlaysPut.signals}
+                    height={306}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                 </section>
 
+                <section className="scalper-trade-strip">
+                  <article className="scalper-trade-panel">
+                    <div className="scalper-trade-panel-head">
+                      <span className="summary-label">Call execution</span>
+                      <strong>{activeOptionPair ? `${activeOptionPair.ce_strike_price} CE` : 'Resolving...'}</strong>
+                    </div>
+                    <div className="scalper-trade-inputs">
+                      <label className="scalper-field compact">
+                        <span>Strike</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                          <input
+                            value={scalperCeStrikePrice}
+                            onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          />
+                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        </div>
+                      </label>
+                      <label className="scalper-field compact">
+                        <span>Lots</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperCallLots(String(Math.max(1, callLots - 1)))}>-</button>
+                          <input value={scalperCallLots} onChange={(event) => setScalperCallLots(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperCallLots(String(callLots + 1))}>+</button>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="scalper-trade-buttons">
+                      <button
+                        type="button"
+                        className="scalper-trade-button buy"
+                        disabled={callTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('CE', 'ORDER_SIDE_BUY') }}
+                      >
+                        <strong>Buy Call</strong>
+                        <span>Req. {formatPrice(callEstimatedValue)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="scalper-trade-button sell"
+                        disabled={callTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('CE', 'ORDER_SIDE_SELL') }}
+                      >
+                        <strong>Sell Call</strong>
+                        <span>Req. {formatPrice(callEstimatedValue)}</span>
+                      </button>
+                    </div>
+                  </article>
+
+                  <article className="scalper-trade-summary">
+                    <span className="summary-label">Execution summary</span>
+                    <strong>{session?.environment ?? 'UAT'} scalper</strong>
+                    <div className="scalper-trade-summary-grid">
+                      <div><span>Lot size</span><strong>{lotSize || '--'}</strong></div>
+                      <div><span>Tick</span><strong>{tickSize || '--'}</strong></div>
+                      <div><span>Call LTP</span><strong>{formatPrice(callMeta?.last_price)}</strong></div>
+                      <div><span>Put LTP</span><strong>{formatPrice(putMeta?.last_price)}</strong></div>
+                    </div>
+                    {scalperTradeError ? <div className="error-banner">{scalperTradeError}</div> : null}
+                    {scalperTradeMessage ? <div className="message-banner">{scalperTradeMessage}</div> : null}
+                  </article>
+
+                  <article className="scalper-trade-panel">
+                    <div className="scalper-trade-panel-head">
+                      <span className="summary-label">Put execution</span>
+                      <strong>{activeOptionPair ? `${activeOptionPair.pe_strike_price} PE` : 'Resolving...'}</strong>
+                    </div>
+                    <div className="scalper-trade-inputs">
+                      <label className="scalper-field compact">
+                        <span>Strike</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                          <input
+                            value={scalperPeStrikePrice}
+                            onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          />
+                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        </div>
+                      </label>
+                      <label className="scalper-field compact">
+                        <span>Lots</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperPutLots(String(Math.max(1, putLots - 1)))}>-</button>
+                          <input value={scalperPutLots} onChange={(event) => setScalperPutLots(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperPutLots(String(putLots + 1))}>+</button>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="scalper-trade-buttons">
+                      <button
+                        type="button"
+                        className="scalper-trade-button buy"
+                        disabled={putTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('PE', 'ORDER_SIDE_BUY') }}
+                      >
+                        <strong>Buy Put</strong>
+                        <span>Req. {formatPrice(putEstimatedValue)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="scalper-trade-button sell"
+                        disabled={putTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('PE', 'ORDER_SIDE_SELL') }}
+                      >
+                        <strong>Sell Put</strong>
+                        <span>Req. {formatPrice(putEstimatedValue)}</span>
+                      </button>
+                    </div>
+                  </article>
+                </section>
+
                 <div className="scalper-terminal-footer">
                   <div className="scalper-terminal-note">
-                    {optionPair
-                      ? `${optionPair.call_display_name} / ${optionPair.put_display_name}`
-                      : 'Resolving option pair...'}
+                    {activeOptionPair
+                      ? `${activeOptionPair.call_display_name} / ${activeOptionPair.put_display_name}`
+                      : scalperSnapshot?.option_pair
+                        ? `${scalperSnapshot.option_pair.call_display_name} / ${scalperSnapshot.option_pair.put_display_name}`
+                        : 'Resolving option pair...'}
                   </div>
                   <div className="scalper-terminal-note">
                     {liveError
@@ -2777,6 +3817,354 @@ export default function App() {
                       : liveStatus || 'Live websocket updates are active for the current candle. REST is only used for periodic reconcile.'}
                   </div>
                 </div>
+              </section>
+
+              <section className="scalper-screener">
+                <div className="scalper-tool-switch" role="tablist" aria-label="Scalper tools">
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'delta-neutral' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('delta-neutral')}
+                  >
+                    Delta Neutral Pairs
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'expiry-heatmap' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('expiry-heatmap')}
+                  >
+                    Expiry Heatmap
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'volume-breakout' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('volume-breakout')}
+                  >
+                    Volume Breakout Finder
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'indicator-builder' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('indicator-builder')}
+                  >
+                    Indicator Builder
+                    {indicatorHook.indicators.filter((i) => i.enabled).length > 0 && (
+                      <span className="ind-count-badge" style={{ marginLeft: 6 }}>
+                        {indicatorHook.indicators.filter((i) => i.enabled).length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'automate' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('automate')}
+                    style={automateEnabled ? { color: '#ef4444', fontWeight: 700 } : undefined}
+                  >
+                    Automate
+                    {automateEnabled && (
+                      <span className="ind-count-badge" style={{ marginLeft: 6, background: '#ef4444' }}>ON</span>
+                    )}
+                  </button>
+                </div>
+
+                {activeScalperTool === 'delta-neutral' ? (
+                  <>
+                    <div className="scalper-screener-head">
+                      <div>
+                        <span className="summary-label">Delta Neutral Pairs</span>
+                        <h2>Top 5 CE / PE combinations</h2>
+                        <p>
+                          Click a ranked pair to load separate call and put strikes into the scalper. Rankings use Nubra CE and PE delta values, with snapshot fallback when live data is unavailable.
+                        </p>
+                      </div>
+                      <div className="scalper-screener-meta">
+                        <span className="scalper-status-pill">{deltaNeutralLoading ? 'Loading pairs...' : `${deltaNeutralPairs.length} pairs`}</span>
+                        <span className="scalper-status-pill">{formatExpiryBadge(scalperExpiry)}</span>
+                      </div>
+                    </div>
+
+                    {deltaNeutralMessage ? <div className="message-banner">{deltaNeutralMessage}</div> : null}
+
+                    <div className="scalper-pair-grid">
+                      {deltaNeutralPairs.length === 0 ? (
+                        <div className="table-empty">No delta-neutral pairs available yet.</div>
+                      ) : (
+                        deltaNeutralPairs.map((pair) => {
+                          const isActive =
+                            pair.ce_strike_price === Number(scalperCeStrikePrice) &&
+                            pair.pe_strike_price === Number(scalperPeStrikePrice) &&
+                            (pair.expiry ?? '') === (normalizedScalperExpiry ?? '')
+
+                          return (
+                            <button
+                              key={`${pair.rank}-${pair.ce_strike_price}-${pair.pe_strike_price}`}
+                              type="button"
+                              className={isActive ? 'scalper-pair-card is-active' : 'scalper-pair-card'}
+                              onClick={() => {
+                                setScalperCeStrikePrice(String(pair.ce_strike_price))
+                                setScalperPeStrikePrice(String(pair.pe_strike_price))
+                                setScalperExpiry(formatExpiryInputValue(pair.expiry))
+                                setScalperReconnectNonce((value) => value + 1)
+                              }}
+                            >
+                              <div className="scalper-pair-rank">#{pair.rank}</div>
+                              <div className="scalper-pair-strikes">
+                                <strong>{pair.ce_strike_price} CE</strong>
+                                <strong>{pair.pe_strike_price} PE</strong>
+                              </div>
+                              <div className="scalper-pair-score">
+                                <span>Neutrality</span>
+                                <strong>{pair.neutrality_score.toFixed(1)}</strong>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>Width {pair.width_points}</span>
+                                <span>Spot {formatPrice(pair.spot_price)}</span>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>CE Delta {pair.call_delta != null ? pair.call_delta.toFixed(2) : '--'}</span>
+                                <span>PE Delta {pair.put_delta != null ? pair.put_delta.toFixed(2) : '--'}</span>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>Net Delta {pair.net_delta != null ? pair.net_delta.toFixed(2) : '--'}</span>
+                                <span>{(pair.expiry ?? '').trim() || 'Nearest expiry'}</span>
+                              </div>
+                              <div className="scalper-pair-bar">
+                                <div
+                                  className="scalper-pair-bar-fill"
+                                  style={{ width: `${Math.max(12, Math.min(100, pair.neutrality_score))}%` }}
+                                />
+                              </div>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </>
+                ) : activeScalperTool === 'expiry-heatmap' ? (
+                  <>
+                    <div className="scalper-screener-head">
+                      <div>
+                        <span className="summary-label">Expiry Heatmap</span>
+                        <h2>Nearest-expiry strike activity around ATM</h2>
+                        <p>
+                          Use the heatmap to spot the most active CE / PE strikes. Click a call cell, put cell, or strike row to load those levels into the scalper.
+                        </p>
+                      </div>
+                      <div className="scalper-screener-meta">
+                        <span className="scalper-status-pill">{expiryHeatmapLoading ? 'Loading heatmap...' : `${expiryHeatmapRows.length} strikes`}</span>
+                        <span className="scalper-status-pill">{formatExpiryBadge(scalperExpiry)}</span>
+                      </div>
+                    </div>
+
+                    {expiryHeatmapMessage ? <div className="message-banner">{expiryHeatmapMessage}</div> : null}
+
+                    <div className="scalper-heatmap-shell">
+                      <div className="scalper-heatmap-header">
+                        <span>Call</span>
+                        <span>Strike</span>
+                        <span>Put</span>
+                      </div>
+
+                      {expiryHeatmapRows.length === 0 ? (
+                        <div className="table-empty">No heatmap rows available yet.</div>
+                      ) : (
+                        <div className="scalper-heatmap-grid">
+                          {expiryHeatmapRows.map((row) => {
+                            const isCenter = row.distance_from_spot === 0
+                            const callActive =
+                              row.strike_price === Number(scalperCeStrikePrice) &&
+                              (row.expiry ?? '') === (normalizedScalperExpiry ?? row.expiry ?? '')
+                            const putActive =
+                              row.strike_price === Number(scalperPeStrikePrice) &&
+                              (row.expiry ?? '') === (normalizedScalperExpiry ?? row.expiry ?? '')
+
+                            return (
+                              <div key={`${row.expiry ?? 'nearest'}-${row.strike_price}`} className="scalper-heatmap-row">
+                                <button
+                                  type="button"
+                                  className={callActive ? 'scalper-heatmap-cell call is-active' : 'scalper-heatmap-cell call'}
+                                  style={{ ['--heat-alpha' as never]: `${Math.max(0.1, row.call_heat / 100)}` }}
+                                  onClick={() => {
+                                    if (!row.call_display_name) return
+                                    setScalperCeStrikePrice(String(row.strike_price))
+                                    setScalperExpiry(formatExpiryInputValue(row.expiry))
+                                    setScalperReconnectNonce((value) => value + 1)
+                                  }}
+                                  disabled={!row.call_display_name}
+                                >
+                                  <strong>{formatPrice(row.call_last_price)}</strong>
+                                  <span>{formatCompactVolume(row.call_volume)}</span>
+                                  <small>{row.call_change_pct == null ? '--' : `${row.call_change_pct >= 0 ? '+' : ''}${row.call_change_pct.toFixed(2)}%`}</small>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  className={isCenter ? 'scalper-heatmap-strike is-center' : 'scalper-heatmap-strike'}
+                                  onClick={() => {
+                                    setScalperCeStrikePrice(String(row.strike_price))
+                                    setScalperPeStrikePrice(String(row.strike_price))
+                                    setScalperExpiry(formatExpiryInputValue(row.expiry))
+                                    setScalperReconnectNonce((value) => value + 1)
+                                  }}
+                                >
+                                  <strong>{row.strike_price}</strong>
+                                  <span>{row.distance_from_spot === 0 ? 'ATM' : `${row.distance_from_spot > 0 ? '+' : ''}${row.distance_from_spot}`}</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  className={putActive ? 'scalper-heatmap-cell put is-active' : 'scalper-heatmap-cell put'}
+                                  style={{ ['--heat-alpha' as never]: `${Math.max(0.1, row.put_heat / 100)}` }}
+                                  onClick={() => {
+                                    if (!row.put_display_name) return
+                                    setScalperPeStrikePrice(String(row.strike_price))
+                                    setScalperExpiry(formatExpiryInputValue(row.expiry))
+                                    setScalperReconnectNonce((value) => value + 1)
+                                  }}
+                                  disabled={!row.put_display_name}
+                                >
+                                  <strong>{formatPrice(row.put_last_price)}</strong>
+                                  <span>{formatCompactVolume(row.put_volume)}</span>
+                                  <small>{row.put_change_pct == null ? '--' : `${row.put_change_pct >= 0 ? '+' : ''}${row.put_change_pct.toFixed(2)}%`}</small>
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : activeScalperTool === 'volume-breakout' ? (
+                  <>
+                    <div className="scalper-screener-head">
+                      <div>
+                        <span className="summary-label">Volume Breakout Finder</span>
+                        <h2>Top option-tradable breakout underlyings</h2>
+                          <p>
+                            Compare the current {scalperInterval} candle volume with the average of all {scalperInterval} candles from the previous {scalperVolumeBreakoutLookbackDays} trading days. After market hours and on weekends, the finder falls back to the latest historical session snapshot.
+                          </p>
+                      </div>
+                      <div className="scalper-screener-meta">
+                        <span className="scalper-status-pill">{scalperVolumeBreakoutLoading ? 'Scanning all stocks…' : `${scalperVolumeBreakoutRows.length} candidates`}</span>
+                        <span className="scalper-status-pill">{scalperVolumeBreakoutLookbackDays}D lookback</span>
+                      </div>
+                    </div>
+
+                    <div className="scalper-breakout-controls">
+                      {[3, 5, 10, 20].map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          className={scalperVolumeBreakoutLookbackDays === days ? 'scalper-lookback-button is-active' : 'scalper-lookback-button'}
+                          onClick={() => setScalperVolumeBreakoutLookbackDays(days as 3 | 5 | 10 | 20)}
+                        >
+                          {days}D
+                        </button>
+                      ))}
+                    </div>
+
+                    {scalperVolumeBreakoutMessage ? <div className="message-banner">{scalperVolumeBreakoutMessage}</div> : null}
+
+                    <div className="scalper-breakout-grid-wrap">
+                    <div className="scalper-breakout-grid">
+                      {scalperVolumeBreakoutRows.length === 0 ? (
+                        <div className="table-empty">No volume breakout candidates are available for this trading-day baseline yet.</div>
+                      ) : (
+                        scalperVolumeBreakoutRows.map((row) => {
+                          const isActive = row.underlying === scalperUnderlying
+                          return (
+                            <button
+                              key={`${row.rank}-${row.underlying}`}
+                              type="button"
+                              className={isActive ? 'scalper-breakout-card is-active' : 'scalper-breakout-card'}
+                              onClick={() => {
+                                // Store expiry before changing underlying so the
+                                // scalperUnderlying effect picks it up instead of resetting to ''.
+                                const desiredExpiry = formatExpiryInputValue(row.nearest_expiry)
+                                if (desiredExpiry) {
+                                  pendingScalperExpiry.current = desiredExpiry
+                                }
+                                setScalperUnderlying(row.underlying)
+                                if (row.atm_strike != null) {
+                                  const strike = String(row.atm_strike)
+                                  setScalperCeStrikePrice(strike)
+                                  setScalperPeStrikePrice(strike)
+                                }
+                                setActiveScalperTool('delta-neutral')
+                                setScalperReconnectNonce((value) => value + 1)
+                              }}
+                            >
+                              <div className="scalper-breakout-rank">#{row.rank}</div>
+                              <div className="scalper-breakout-header">
+                                <div>
+                                  <strong>{row.underlying}</strong>
+                                  <span>{row.display_name}</span>
+                                </div>
+                                <span className="scalper-breakout-status">{row.status_label}</span>
+                              </div>
+                              <div className="scalper-breakout-price-row">
+                                <strong>{formatPrice(row.last_price)}</strong>
+                                <span>{row.price_change_pct == null ? '--' : `${row.price_change_pct >= 0 ? '+' : ''}${row.price_change_pct.toFixed(2)}%`}</span>
+                              </div>
+                              <div className="scalper-breakout-metrics">
+                                <span>Vol ratio</span>
+                                <strong>{row.volume_ratio.toFixed(2)}x</strong>
+                              </div>
+                              <div className="scalper-breakout-metrics">
+                                <span>Current</span>
+                                <strong>{formatCompactVolume(row.current_volume)}</strong>
+                              </div>
+                              <div className="scalper-breakout-metrics">
+                                  <span>Avg candle ({scalperVolumeBreakoutLookbackDays}D)</span>
+                                <strong>{formatCompactVolume(row.average_volume)}</strong>
+                              </div>
+                              <div className="scalper-breakout-metrics">
+                                <span>Nearest expiry</span>
+                                <strong>{formatExpiryBadge(row.nearest_expiry)}</strong>
+                              </div>
+                              <div className="scalper-breakout-metrics">
+                                <span>ATM strike</span>
+                                <strong>{row.atm_strike == null ? '--' : row.atm_strike}</strong>
+                              </div>
+                              <div className="scalper-breakout-bar">
+                                <div
+                                  className="scalper-breakout-bar-fill"
+                                  style={{ width: `${Math.max(14, Math.min(100, row.breakout_strength))}%` }}
+                                />
+                              </div>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                    </div>
+                  </>
+                ) : activeScalperTool === 'indicator-builder' ? (
+                  <IndicatorBuilder
+                    indicators={indicatorHook.indicators}
+                    presets={indicatorHook.presets}
+                    onAddFromPreset={indicatorHook.addFromPreset}
+                    onToggle={indicatorHook.toggle}
+                    onRemove={indicatorHook.remove}
+                    onRename={indicatorHook.rename}
+                    onUpdate={indicatorHook.update}
+                    theme={theme}
+                  />
+                ) : activeScalperTool === 'automate' ? (
+                  <AutomatePanel
+                    enabled={automateEnabled}
+                    onToggle={setAutomateEnabled}
+                    config={automateConfig}
+                    onConfigChange={(next) => setAutomateConfig((prev) => ({ ...prev, ...next }))}
+                    hasSignals={automationHasSignals}
+                    position={automation.position}
+                    tradeCount={automation.tradeCount}
+                    log={automation.log}
+                    onClearLog={automation.clearLog}
+                    onResetPosition={automation.resetPosition}
+                    disabled={!session || !!session.is_demo}
+                  />
+                ) : null}
               </section>
             </>
           )}
@@ -2791,15 +4179,7 @@ export default function App() {
         <section className="dashboard-panel">
           {renderDashboardNav('Dashboard')}
 
-          <section className="dashboard-header">
-            <div>
-              <h1>Dashboard</h1>
-              <p>
-                Logged in as {session?.user_name ?? 'Nubra User'} on {session?.environment ?? 'PROD'}.
-              </p>
-              {isSessionChecking ? <p>Checking session status...</p> : null}
-            </div>
-          </section>
+          {isSessionChecking ? <p style={{ padding: '0 4px', fontSize: '0.82rem', color: 'var(--text-muted, #94a3b8)' }}>Checking session status...</p> : null}
 
           <section className="card-grid">
             {dashboardCards.map((card) => (
@@ -2819,10 +4199,10 @@ export default function App() {
                     : undefined
                 }
               >
-                <div className={`module-badge ${card.badgeClass}`}>{card.badge}</div>
+                <div className={`module-badge ${card.badgeClass}`}>{card.icon}</div>
                 <h2>{card.title}</h2>
                 <p>{card.description}</p>
-                <span className="module-footer">{card.footer}</span>
+                <span className="module-footer">{card.footer}{card.key ? ' ->' : ''}</span>
               </article>
             ))}
           </section>
@@ -2843,242 +4223,233 @@ export default function App() {
               View Documentation
             </button>
           </section>
-
-          <section className="dashboard-module-card tunnel-card">
-            <div className="tunnel-card-header">
-              <div>
-                <h2>Public Webhook URL</h2>
-                <p>Start a built-in Cloudflare tunnel so TradingView can reach your local NubraOSS backend.</p>
-              </div>
-              <div className="tunnel-actions">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => handleTunnelAction('start')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
-                >
-                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('refresh')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('stop')}
-                  disabled={!tunnelStatus?.running || tunnelAction !== null}
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-
-            <div className="tunnel-grid">
-              <div className="tunnel-panel">
-                <span className="summary-label">Webhook URL</span>
-                <strong className="tunnel-url">
-                  {tunnelStatus?.public_url ?? 'Not generated yet'}
-                </strong>
-                <small>TradingView target: {(tunnelStatus?.public_url ?? 'Generate URL') + '/api/webhooks/tradingview'}</small>
-              </div>
-              <div className="tunnel-panel">
-                <span className="summary-label">Target</span>
-                <strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong>
-                <small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small>
-              </div>
-            </div>
-
-            {tunnelStatus?.last_error ? <div className="error-banner">{tunnelStatus.last_error}</div> : null}
-
-            <div className="tunnel-log-card">
-              <span className="summary-label">Tunnel Logs</span>
-              {(tunnelStatus?.logs ?? []).length === 0 ? (
-                <div className="table-empty">No tunnel logs yet.</div>
-              ) : (
-                <div className="tunnel-log-list">
-                  {(tunnelStatus?.logs ?? []).slice(-6).map((line, index) => (
-                    <div key={`${index}-${line}`} className="tunnel-log-line">
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
         </section>
       </main>
     )
   }
 
-  return (
-    <main className="login-shell">
-      <section className="login-layout">
-        <section className="hero-panel">
-          <div className="hero-surface">
-            <div className="brand-block">
-              <img src={nubraLogo} alt="Nubra" className="brand-logo hero-brand-logo" />
-              <div>
-                <div className="brand-name">NubraOSS</div>
-                <div className="brand-caption">Personal algo trading workspace</div>
-              </div>
-            </div>
-
-            <div className="hero-copy">
-              <h1>
-                Welcome to <span className="hero-accent">NubraOSS</span>
-              </h1>
-              <p>
-                Sign in to your account to access your trading dashboard and manage your no-code
-                and automated trading workflows.
-              </p>
-              <div className="hero-alert">
-                <strong>First Time User?</strong>
-                <span>
-                  This section will later hold onboarding guidance, release notes, and product
-                  help.
-                </span>
-              </div>
-            </div>
+    return (
+      <main className="login-shell">
+        <section className="login-stage">
+          <div className="login-theme-switch">
+            {renderThemeToggle('login-theme-toggle')}
           </div>
-        </section>
+          <div className="login-grid" aria-hidden="true" />
 
-        <section className="login-frame">
-          <div className="login-frame-inner">
-            <div className="title-block">
-              <h1>Sign in to Nubra</h1>
-              <p>{helperText}</p>
-            </div>
-
-            <div className="demo-banner">
-              <div>
-                <strong>Need a safe test path?</strong>
-                <span>Use demo mode to inspect the latest UI without real credentials.</span>
+          {!loginInitialized ? (
+            <section className="launch-screen">
+              <div className="launch-brand">
+                <span>NubraOSS</span>
               </div>
-              <button type="button" className="secondary-button demo-button" onClick={handleDemoLogin}>
-                Enter Demo
-              </button>
-            </div>
 
-            <div className="env-switch" role="tablist" aria-label="Environment">
-              <button
-                type="button"
-                className={environment === 'PROD' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('PROD')}
-              >
-                PROD
-              </button>
-              <button
-                type="button"
-                className={environment === 'UAT' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('UAT')}
-              >
-                UAT
-              </button>
-            </div>
+            <p className="launch-caption">
+              The professional operating system for algorithmic execution. Engineered for
+              precision, built for scale.
+            </p>
 
-            <div className="steps-column">
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={phoneComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>Phone number</h2>
-                    <p>Bootstrap the OTP flow from your Nubra account.</p>
+            <div className="launch-actions">
+              <button type="button" className="launch-button" onClick={() => setLoginInitialized(true)}>
+                Initialize System
+                <span className="launch-button-arrow">&gt;</span>
+              </button>
+
+              <div className="launch-features" aria-label="Product highlights">
+                <span>Secure</span>
+                <span>Low Latency</span>
+                <span>No-Code</span>
+              </div>
+            </div>
+          </section>
+        ) : (
+          <section className="auth-stage">
+            <section className="login-frame">
+              <div className="login-frame-inner">
+
+                {/* Header */}
+                <div className="auth-frame-head">
+                  <button type="button" className="auth-back-link" onClick={() => setLoginInitialized(false)}>
+                    {'<- Back'}
+                  </button>
+                  <div className="brand-block auth-brand-block">
+                    <img src={nubraLogo} alt="Nubra" className="brand-logo" />
+                    <div>
+                      <div className="brand-name">NubraOSS</div>
+                      <div className="brand-caption">Trading workspace</div>
+                    </div>
+                  </div>
+                  <div className="env-switch" role="tablist" aria-label="Environment">
+                    <button
+                      type="button"
+                      className={environment === 'PROD' ? 'env-button active' : 'env-button'}
+                      onClick={() => setEnvironment('PROD')}
+                    >
+                      PROD
+                    </button>
+                    <button
+                      type="button"
+                      className={environment === 'UAT' ? 'env-button active' : 'env-button'}
+                      onClick={() => setEnvironment('UAT')}
+                    >
+                      UAT
+                    </button>
                   </div>
                 </div>
 
-                <form className="step-form step-form-phone" onSubmit={handleStart}>
-                  <input
-                    value={phone}
-                    onChange={(event) => setPhone(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter phone number"
-                    maxLength={15}
-                    required
-                  />
-                  <button
-                    className="primary-button"
-                    disabled={activeAction !== null || phone.length < 10}
-                    type="submit"
-                  >
-                    {activeAction === 'phone' ? 'Sending OTP...' : 'Send OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={otpComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>OTP</h2>
-                    <p>
-                      {maskedPhone
-                        ? `Verify the SMS OTP sent to ${maskedPhone}.`
-                        : 'Enter OTP after the first step completes.'}
-                    </p>
-                  </div>
+                {/* Step progress */}
+                <div className="auth-steps-progress">
+                  {(['start', 'otp', 'mpin'] as const).map((s, i) => {
+                    const labels = ['Phone', 'OTP', 'MPIN']
+                    const isDone = (s === 'start' && phoneComplete) || (s === 'otp' && otpComplete) || (s === 'mpin' && mpinComplete)
+                    const isActive = (s === 'start' && !phoneComplete) || (s === 'otp' && phoneComplete && !otpComplete) || (s === 'mpin' && otpComplete && !mpinComplete)
+                    return (
+                      <div key={s} className={`auth-step-node${isDone ? ' done' : isActive ? ' active' : ''}`}>
+                        <div className="auth-step-circle">
+                          {isDone ? 'Done' : <span>{i + 1}</span>}
+                        </div>
+                        <span className="auth-step-label">{labels[i]}</span>
+                        {i < 2 && <div className={`auth-step-line${isDone ? ' done' : ''}`} />}
+                      </div>
+                    )
+                  })}
                 </div>
 
-                <form className="step-form step-form-inline" onSubmit={handleOtp}>
-                  <input
-                    value={otp}
-                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter OTP"
-                    maxLength={8}
-                    required
-                    disabled={!phoneComplete || otpComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !phoneComplete || otp.length < 4 || otpComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'otp' ? 'Verifying OTP...' : 'Verify OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={mpinComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>MPIN</h2>
-                    <p>Confirm the MPIN only after OTP verification succeeds.</p>
+                {/* Step 1 - Phone */}
+                {!phoneComplete && (
+                  <div className="auth-wizard-step">
+                    <div className="auth-wizard-heading">
+                      <h1>Enter your phone number</h1>
+                      <p>We'll send an OTP to your registered Nubra number.</p>
+                    </div>
+                    <form className="auth-wizard-form" onSubmit={handleStart}>
+                      <div className="auth-input-group">
+                        <label className="auth-label">Phone number</label>
+                        <input
+                          className="auth-input"
+                          value={phone}
+                          onChange={(event) => setPhone(event.target.value.replace(/\D/g, ''))}
+                          placeholder="10-digit mobile number"
+                          maxLength={15}
+                          inputMode="numeric"
+                          autoFocus
+                          required
+                        />
+                      </div>
+                      <button
+                        className="auth-primary-btn"
+                        disabled={activeAction !== null || phone.length < 10}
+                        type="submit"
+                      >
+                        {activeAction === 'phone' ? (
+                          <span className="auth-btn-loading"><span className="auth-spinner" />Sending OTP...</span>
+                        ) : (
+                          <>Send OTP <span className="auth-btn-arrow">{'->'}</span></>
+                        )}
+                      </button>
+                    </form>
                   </div>
+                )}
+
+                {/* Step 2 - OTP */}
+                {phoneComplete && !otpComplete && (
+                  <div className="auth-wizard-step">
+                    <div className="auth-wizard-heading">
+                      <h1>Verify OTP</h1>
+                      <p>OTP sent to <strong>{maskedPhone || 'your number'}</strong>. Enter it below.</p>
+                    </div>
+                    <form className="auth-wizard-form" onSubmit={handleOtp}>
+                      <div className="auth-input-group">
+                        <label className="auth-label">One-time password</label>
+                        <input
+                          className="auth-input auth-input-otp"
+                          value={otp}
+                          onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
+                          placeholder="Enter OTP"
+                          maxLength={8}
+                          inputMode="numeric"
+                          autoFocus
+                          required
+                        />
+                      </div>
+                      <button
+                        className="auth-primary-btn"
+                        disabled={activeAction !== null || otp.length < 4}
+                        type="submit"
+                      >
+                        {activeAction === 'otp' ? (
+                          <span className="auth-btn-loading"><span className="auth-spinner" />Verifying...</span>
+                        ) : (
+                          <>Verify OTP <span className="auth-btn-arrow">{'->'}</span></>
+                        )}
+                      </button>
+                    </form>
+                    <button type="button" className="auth-ghost-btn" onClick={() => { setFlowId(''); setStep('start'); setOtp('') }}>
+                      {'<- Change number'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Step 3 - MPIN */}
+                {otpComplete && !mpinComplete && (
+                  <div className="auth-wizard-step">
+                    <div className="auth-wizard-heading">
+                      <h1>Confirm MPIN</h1>
+                      <p>OTP verified. Enter your MPIN to enter the workspace.</p>
+                    </div>
+                    <form className="auth-wizard-form" onSubmit={handleMpin}>
+                      <div className="auth-input-group">
+                        <label className="auth-label">MPIN</label>
+                        <input
+                          className="auth-input auth-input-otp"
+                          value={mpin}
+                          onChange={(event) => setMpin(event.target.value.replace(/\D/g, ''))}
+                          placeholder="Enter MPIN"
+                          maxLength={6}
+                          inputMode="numeric"
+                          type="password"
+                          autoFocus
+                          required
+                        />
+                      </div>
+                      <button
+                        className="auth-primary-btn"
+                        disabled={activeAction !== null || mpin.length < 4}
+                        type="submit"
+                      >
+                        {activeAction === 'mpin' ? (
+                          <span className="auth-btn-loading"><span className="auth-spinner" />Signing in...</span>
+                        ) : (
+                          <>Enter workspace <span className="auth-btn-arrow">{'->'}</span></>
+                        )}
+                      </button>
+                    </form>
+                  </div>
+                )}
+
+                {/* Feedback */}
+                {(error || (message && step !== 'start')) && (
+                  <div className="auth-feedback">
+                    {error && <div className="error-banner">{error}</div>}
+                    {!error && message && step !== 'start' && <div className="message-banner">{message}</div>}
+                  </div>
+                )}
+
+                {/* Demo */}
+                <div className="auth-demo-row">
+                  <span>No credentials?</span>
+                  <button type="button" className="auth-ghost-btn" onClick={handleDemoLogin}>
+                    {'Try Demo mode ->'}
+                  </button>
                 </div>
 
-                <form className="step-form step-form-inline" onSubmit={handleMpin}>
-                  <input
-                    value={mpin}
-                    onChange={(event) => setMpin(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter MPIN"
-                    maxLength={6}
-                    required
-                    disabled={!otpComplete || mpinComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !otpComplete || mpin.length < 4 || mpinComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'mpin' ? 'Confirming MPIN...' : 'Confirm MPIN'}
-                  </button>
-                </form>
-              </section>
-            </div>
-
-            <div className="feedback-column">
-              {message ? <div className="message-banner">{message}</div> : null}
-              {error ? <div className="error-banner">{error}</div> : null}
-            </div>
-          </div>
-        </section>
+              </div>
+            </section>
+          </section>
+        )}
       </section>
     </main>
   )
 }
+
+
 
 

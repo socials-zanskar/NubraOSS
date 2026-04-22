@@ -5,49 +5,73 @@ import {
   type IChartApi,
   type ISeriesApi,
   type UTCTimestamp,
+  type SeriesMarker,
 } from 'lightweight-charts'
 import type { Panel, PanelSeries } from '../hooks/useScalperLive'
+import type { ComputedOverlay, ComputedSignals } from '../types/indicators'
 
-// ─────────────────────────────────────────────────────────────────────────────
 const STANDARD_MARKET = {
   up: '#22c55e',
   down: '#f43f5e',
-  upVolume: 'rgba(34, 197, 94, 0.35)',
-  downVolume: 'rgba(244, 63, 94, 0.35)',
+  upVolume: 'rgba(34, 197, 94, 0.48)',
+  downVolume: 'rgba(244, 63, 94, 0.48)',
 } as const
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Props
-// ─────────────────────────────────────────────────────────────────────────────
+const CHART_THEME = {
+  dark: {
+    bg: '#0a0f1a',
+    text: '#94a3b8',
+    grid: '#151f2e',
+    crosshair: '#334155',
+    crosshairLabel: '#1e293b',
+    border: '#1e293b',
+    scaleText: '#64748b',
+  },
+  light: {
+    bg: '#ffffff',
+    text: '#475569',
+    grid: '#e8eef7',
+    crosshair: '#94a3b8',
+    crosshairLabel: '#f0f4fa',
+    border: '#dce4f0',
+    scaleText: '#64748b',
+  },
+} as const
 
 interface ScalperLiveChartProps {
   panel: Panel
   accent: 'blue' | 'green' | 'red'
   title: string
-  /** Instrument display name — shown in chart header. */
   displayName: string | null
-  /** Latest close price for the header badge. */
   lastPrice: number | null
   interval: string | null
   exchange: string | null
-  /** Chart container height in px. */
+  fallbackCandles?: Array<{
+    epoch_ms: number
+    open: number
+    high: number
+    low: number
+    close: number
+    volume: number | null
+  }>
+  overlays?: ComputedOverlay[]
+  signals?: ComputedSignals[]
   height?: number
-  /** Called once after the chart + series are created. */
+  theme?: 'light' | 'dark'
   onSeriesReady: (panel: Panel, series: PanelSeries) => void
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Formatting helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function fmt(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '--'
-  return v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+function fmt(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '--'
+  return value.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Component
-// ─────────────────────────────────────────────────────────────────────────────
+function toChartTime(epochMs: number): UTCTimestamp {
+  return Math.floor(epochMs / 1000 + 19800) as UTCTimestamp
+}
 
 export default function ScalperLiveChart({
   panel,
@@ -57,79 +81,81 @@ export default function ScalperLiveChart({
   lastPrice,
   interval,
   exchange,
+  fallbackCandles,
+  overlays = [],
+  signals = [],
   height = 340,
+  theme = 'dark',
   onSeriesReady,
 }: ScalperLiveChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
-  // Stable ref for the callback so we don't recreate the chart if it changes
   const onSeriesReadyRef = useRef(onSeriesReady)
   onSeriesReadyRef.current = onSeriesReady
 
-  // ── Create chart once on mount ────────────────────────────────────────────
+  // Map of "indicatorId::lineId" → line series for overlay management
+  const overlaySeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+
   useEffect(() => {
     if (!containerRef.current) return
 
     const container = containerRef.current
+    const palette = CHART_THEME[theme]
 
     const chart = createChart(container, {
       width: container.clientWidth,
       height,
       layout: {
-        background: { color: '#0a0f1a' },
-        textColor: '#94a3b8',
+        background: { color: palette.bg },
+        textColor: palette.text,
         fontSize: 11,
         fontFamily: "'Inter', 'ui-sans-serif', system-ui, sans-serif",
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: '#151f2e', style: 0 },
-        horzLines: { color: '#151f2e', style: 0 },
+        vertLines: { color: palette.grid, style: 0 },
+        horzLines: { color: palette.grid, style: 0 },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
-          color: '#334155',
+          color: palette.crosshair,
           width: 1,
           style: 1,
-          labelBackgroundColor: '#1e293b',
+          labelBackgroundColor: palette.crosshairLabel,
         },
         horzLine: {
-          color: '#334155',
+          color: palette.crosshair,
           width: 1,
           style: 1,
-          labelBackgroundColor: '#1e293b',
+          labelBackgroundColor: palette.crosshairLabel,
         },
       },
       rightPriceScale: {
-        borderColor: '#1e293b',
-        textColor: '#64748b',
-        scaleMargins: { top: 0.08, bottom: 0.2 },
+        borderColor: palette.border,
+        textColor: palette.scaleText,
+        scaleMargins: { top: 0.05, bottom: 0.28 },
       },
       timeScale: {
-        borderColor: '#1e293b',
+        borderColor: palette.border,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 5,
-        barSpacing: 8,
+        barSpacing: 9,
         fixLeftEdge: false,
         lockVisibleTimeRangeOnResize: true,
       },
       handleScroll: { vertTouchDrag: false },
-      // IST offset is baked into the time values (+19800 s).
-      // The chart thinks it's displaying UTC but it's actually IST.
       localization: {
-        timeFormatter: (t: UTCTimestamp) => {
-          // t already has the IST offset added — format as HH:MM
-          const d = new Date(t * 1000)
+        timeFormatter: (time: UTCTimestamp) => {
+          const d = new Date(time * 1000)
           return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
         },
       },
     })
 
-    // Candlestick series
     const candleSeries = chart.addCandlestickSeries({
       upColor: STANDARD_MARKET.up,
       downColor: STANDARD_MARKET.down,
@@ -141,27 +167,42 @@ export default function ScalperLiveChart({
       lastValueVisible: true,
     })
 
-    // Volume histogram — pinned to the bottom 18 % of the pane
-    const volSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addHistogramSeries({
       priceFormat: { type: 'volume' },
       priceScaleId: 'vol',
       color: STANDARD_MARKET.upVolume,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      autoscaleInfoProvider: (
+        original: () => { priceRange: { minValue: number; maxValue: number } } | null,
+      ) => {
+        const base = original()
+        if (!base) return null
+        const max = base.priceRange.maxValue
+        return {
+          priceRange: {
+            minValue: 0,
+            maxValue: max <= 0 ? 1 : max * 1.12,
+          },
+        }
+      },
     })
+
     chart.priceScale('vol').applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0 },
+      scaleMargins: { top: 0.72, bottom: 0.02 },
     })
 
     chartRef.current = chart
     candleRef.current = candleSeries
-    volumeRef.current = volSeries
+    volumeRef.current = volumeSeries
+    overlaySeriesRef.current.clear()
 
     onSeriesReadyRef.current(panel, {
       candle: candleSeries,
-      volume: volSeries,
+      volume: volumeSeries,
       chart,
     })
 
-    // Responsive resize
     const observer = new ResizeObserver(() => {
       if (container.clientWidth > 0) {
         chart.applyOptions({ width: container.clientWidth })
@@ -175,16 +216,112 @@ export default function ScalperLiveChart({
       chartRef.current = null
       candleRef.current = null
       volumeRef.current = null
+      overlaySeriesRef.current.clear()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // intentionally empty — chart is created once per mount
+  }, [theme, height, panel])
 
-  // ── Update height if prop changes ─────────────────────────────────────────
+  // ── Apply fallback historical candles ────────────────────────────────────────
   useEffect(() => {
-    chartRef.current?.applyOptions({ height })
-  }, [height])
+    if (!fallbackCandles?.length || !candleRef.current || !volumeRef.current) return
 
-  // ── Derive CSS class from accent ─────────────────────────────────────────
+    candleRef.current.setData(
+      fallbackCandles.map((candle) => ({
+        time: toChartTime(candle.epoch_ms),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      })),
+    )
+
+    volumeRef.current.setData(
+      fallbackCandles.map((candle) => ({
+        time: toChartTime(candle.epoch_ms),
+        value: candle.volume ?? 0,
+        color: candle.close >= candle.open ? STANDARD_MARKET.upVolume : STANDARD_MARKET.downVolume,
+      })),
+    )
+
+    chartRef.current?.timeScale().scrollToRealTime()
+  }, [fallbackCandles])
+
+  // ── Apply indicator overlays (line series) ───────────────────────────────────
+  useEffect(() => {
+    const chart = chartRef.current
+    const candleSeries = candleRef.current
+    if (!chart) return
+
+    const seriesMap = overlaySeriesRef.current
+    const incomingKeys = new Set<string>()
+
+    // Add or update line series for each overlay
+    for (const overlay of overlays) {
+      if (overlay.overlayType !== 'line') continue
+      if (!overlay.points.length) continue
+
+      const key = `${overlay.indicatorId}::${overlay.lineId}`
+      incomingKeys.add(key)
+
+      let series = seriesMap.get(key)
+      if (!series) {
+        series = chart.addLineSeries({
+          color: overlay.color,
+          lineWidth: overlay.thickness as 1 | 2 | 3 | 4,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        })
+        seriesMap.set(key, series)
+      } else {
+        series.applyOptions({
+          color: overlay.color,
+          lineWidth: overlay.thickness as 1 | 2 | 3 | 4,
+        })
+      }
+
+      series.setData(
+        overlay.points.map((pt) => ({
+          time: pt.time as UTCTimestamp,
+          value: pt.value,
+        })),
+      )
+    }
+
+    // Remove series for overlays that are no longer present
+    for (const [key, series] of seriesMap.entries()) {
+      if (!incomingKeys.has(key)) {
+        try {
+          chart.removeSeries(series)
+        } catch {
+          // series may already be gone if chart was recreated
+        }
+        seriesMap.delete(key)
+      }
+    }
+
+    // Apply buy/sell markers on the candle series
+    if (candleSeries) {
+      const allMarkers: SeriesMarker<UTCTimestamp>[] = []
+
+      for (const sig of signals) {
+        for (const pt of sig.signals) {
+          allMarkers.push({
+            time: pt.time as UTCTimestamp,
+            position: pt.side === 'buy' ? 'belowBar' : 'aboveBar',
+            shape: pt.side === 'buy' ? 'arrowUp' : 'arrowDown',
+            color: pt.side === 'buy' ? sig.buyMarkerColor : sig.sellMarkerColor,
+            text: pt.label ?? (pt.side === 'buy' ? 'B' : 'S'),
+            size: 1,
+          })
+        }
+      }
+
+      // Sort markers by time ascending (lightweight-charts requirement)
+      allMarkers.sort((a, b) => (a.time as number) - (b.time as number))
+      candleSeries.setMarkers(allMarkers)
+    }
+  }, [overlays, signals])
+
   const cardClass =
     accent === 'green'
       ? 'scalper-chart-card accent-green'
@@ -200,7 +337,7 @@ export default function ScalperLiveChart({
         <div>
           <span className="summary-label">{title}</span>
           <h3 style={{ margin: '2px 0 0', fontSize: '0.97rem', fontWeight: 600 }}>
-            {displayName ?? 'Connecting…'}
+            {displayName ?? 'Connecting...'}
           </h3>
         </div>
         <div className="scalper-chart-price">
@@ -224,7 +361,6 @@ export default function ScalperLiveChart({
         </div>
       </div>
 
-      {/* lightweight-charts renders into this div */}
       <div
         ref={containerRef}
         className="scalper-chart-canvas"

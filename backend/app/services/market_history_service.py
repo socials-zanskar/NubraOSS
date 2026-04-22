@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
@@ -44,6 +44,26 @@ class MarketHistoryService:
             return detail
         return f"Nubra request failed with status {response.status_code}."
 
+    def _normalize_weekend_window(self, start_dt: datetime, end_dt: datetime) -> tuple[datetime, datetime]:
+        end_ist = end_dt.astimezone(IST)
+        if end_ist.weekday() < 5:
+            return start_dt, end_dt
+
+        shifted_end_ist = end_ist
+        while shifted_end_ist.weekday() >= 5:
+            shifted_end_ist = shifted_end_ist - timedelta(days=1)
+        shifted_end_ist = shifted_end_ist.replace(
+            hour=15,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+
+        duration = max(end_dt - start_dt, timedelta(days=1))
+        shifted_end = shifted_end_ist.astimezone(end_dt.tzinfo or UTC)
+        shifted_start = shifted_end - duration
+        return shifted_start, shifted_end
+
     def fetch(self, request: HistoricalFetchRequest) -> dict[str, pd.DataFrame]:
         if not request.symbols:
             return {}
@@ -55,6 +75,8 @@ class MarketHistoryService:
                 f"received {len(request.symbols)}."
             )
 
+        start_dt, end_dt = self._normalize_weekend_window(request.start_dt, request.end_dt)
+
         payload = {
             "query": [
                 {
@@ -62,10 +84,13 @@ class MarketHistoryService:
                     "type": request.instrument_type,
                     "values": list(request.symbols),
                     "fields": ["open", "high", "low", "close", "cumulative_volume"],
-                    "startDate": request.start_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "endDate": request.end_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "startDate": start_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "endDate": end_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                     "interval": request.interval,
-                    "intraDay": True,
+                    # We always provide an explicit time window for chart history.
+                    # Keeping intraDay=False ensures Nubra respects start/end dates
+                    # instead of forcing the current day, which breaks weekend fallback.
+                    "intraDay": False,
                     "realTime": False,
                 }
             ]

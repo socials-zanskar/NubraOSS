@@ -70,7 +70,7 @@ This repo assumes the external updater keeps Supabase warm with:
 ```powershell
 cd C:\Nubra\NubraOSS\backend
 .venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 ### Frontend
@@ -78,7 +78,7 @@ cd C:\Nubra\NubraOSS\backend
 ```powershell
 cd C:\Nubra\NubraOSS\frontend
 cmd /c npm install
-cmd /c npm run dev
+cmd /c npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
 ### Local one-command startup

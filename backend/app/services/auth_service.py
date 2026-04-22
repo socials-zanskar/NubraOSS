@@ -41,6 +41,21 @@ class AuthService:
             or f"Nubra request failed with status {response.status_code}."
         )
 
+    def _safe_json(self, response: httpx.Response) -> dict:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Nubra auth service returned an empty or invalid JSON response.",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=502,
+                detail="Nubra auth service returned an unexpected response shape.",
+            )
+        return payload
+
     def _decode_expiry(self, session_token: str) -> str | None:
         try:
             parts = session_token.split(".")
@@ -73,7 +88,7 @@ class AuthService:
                         detail=self._extract_error(response),
                     )
 
-                response_payload = response.json()
+                response_payload = self._safe_json(response)
                 temp_token = response_payload.get("temp_token")
                 if not temp_token:
                     raise HTTPException(
@@ -129,7 +144,7 @@ class AuthService:
                         status_code=response.status_code,
                         detail=self._extract_error(response),
                     )
-                response_payload = response.json()
+                response_payload = self._safe_json(response)
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=502,
@@ -178,7 +193,7 @@ class AuthService:
                         status_code=response.status_code,
                         detail=self._extract_error(response),
                     )
-                response_payload = response.json()
+                response_payload = self._safe_json(response)
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=502,

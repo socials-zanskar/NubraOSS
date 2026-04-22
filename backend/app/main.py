@@ -7,14 +7,22 @@ import httpx
 
 from app.config import get_cors_origins, settings
 from app.schemas import (
+    DeltaNeutralPairsRequest,
+    DeltaNeutralPairsResponse,
+    ExpiryHeatmapRequest,
+    ExpiryHeatmapResponse,
     NoCodeInstrumentMetaRequest,
     NoCodeInstrumentMetaResponse,
     NoCodeStartRequest,
     NoCodeStartResponse,
     NoCodeStatusResponse,
     NoCodeStopResponse,
+    ScalperOrderRequest,
+    ScalperOrderResponse,
     ScalperSnapshotRequest,
     ScalperSnapshotResponse,
+    ScalperVolumeBreakoutRequest,
+    ScalperVolumeBreakoutResponse,
     SessionStatusRequest,
     SessionStatusResponse,
     StartLoginRequest,
@@ -43,6 +51,7 @@ from app.services.instrument_service import instrument_service
 from app.services.no_code_service import no_code_service
 from app.services.scalper_live_service import ScalperLiveSession
 from app.services.scalper_service import scalper_service
+from app.services.scalper_volume_breakout_service import scalper_volume_breakout_service
 from app.services.tradingview_webhook_service import tradingview_webhook_service
 from app.services.tunnel_service import tunnel_service
 from app.services.volume_breakout_service import volume_breakout_service
@@ -192,6 +201,26 @@ def search_stocks(payload: StockSearchRequest) -> StockSearchResponse:
 @app.post("/api/scalper/snapshot", response_model=ScalperSnapshotResponse)
 def get_scalper_snapshot(payload: ScalperSnapshotRequest) -> ScalperSnapshotResponse:
     return scalper_service.snapshot(payload)
+
+
+@app.post("/api/scalper/delta-neutral", response_model=DeltaNeutralPairsResponse)
+def get_scalper_delta_neutral_pairs(payload: DeltaNeutralPairsRequest) -> DeltaNeutralPairsResponse:
+    return scalper_service.delta_neutral_pairs(payload)
+
+
+@app.post("/api/scalper/expiry-heatmap", response_model=ExpiryHeatmapResponse)
+def get_scalper_expiry_heatmap(payload: ExpiryHeatmapRequest) -> ExpiryHeatmapResponse:
+    return scalper_service.expiry_heatmap(payload)
+
+
+@app.post("/api/scalper/volume-breakout", response_model=ScalperVolumeBreakoutResponse)
+def get_scalper_volume_breakout(payload: ScalperVolumeBreakoutRequest) -> ScalperVolumeBreakoutResponse:
+    return scalper_volume_breakout_service.volume_breakout_finder(payload)
+
+
+@app.post("/api/scalper/order", response_model=ScalperOrderResponse)
+def place_scalper_order(payload: ScalperOrderRequest) -> ScalperOrderResponse:
+    return scalper_service.place_order(payload)
 
 
 @app.websocket("/ws/scalper")
