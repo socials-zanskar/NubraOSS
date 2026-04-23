@@ -56,6 +56,62 @@ class AuthService:
         except Exception:
             return None
 
+    def _session_headers(self, session_token: str, device_id: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {session_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "x-device-id": device_id,
+        }
+
+    def _find_nested_string(self, payload: object, field_name: str, *, depth: int = 4) -> str | None:
+        if depth < 0:
+            return None
+        if isinstance(payload, dict):
+            value = payload.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            for nested in payload.values():
+                found = self._find_nested_string(nested, field_name, depth=depth - 1)
+                if found:
+                    return found
+        if isinstance(payload, list):
+            for nested in payload:
+                found = self._find_nested_string(nested, field_name, depth=depth - 1)
+                if found:
+                    return found
+        return None
+
+    def _fetch_client_code(
+        self,
+        client: httpx.Client,
+        *,
+        base_url: str,
+        session_token: str,
+        device_id: str,
+    ) -> str | None:
+        headers = self._session_headers(session_token, device_id)
+        for path in (
+            "portfolio/user_funds_and_margin",
+            "portfolio/v2/positions",
+            "portfolio/holdings",
+            "userinfo",
+        ):
+            try:
+                response = client.get(f"{base_url}/{path}", headers=headers)
+            except httpx.RequestError:
+                continue
+            if response.status_code >= 400:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            client_code = self._find_nested_string(payload, "client_code")
+            if client_code:
+                return client_code
+        return None
+
     def start_login(self, payload: StartLoginRequest) -> StartLoginResponse:
         base_url = self._get_base_url(payload.environment)
         device_id = f"Nubra-OSS-{payload.phone}"
@@ -161,6 +217,7 @@ class AuthService:
             raise HTTPException(status_code=400, detail="MPIN must be numeric.")
 
         base_url = self._get_base_url(flow["environment"])
+        client_code = None
 
         try:
             with httpx.Client(timeout=20.0) as client:
@@ -179,6 +236,14 @@ class AuthService:
                         detail=self._extract_error(response),
                     )
                 response_payload = response.json()
+                session_token = response_payload.get("session_token")
+                if session_token:
+                    client_code = self._fetch_client_code(
+                        client,
+                        base_url=base_url,
+                        session_token=session_token,
+                        device_id=flow["device_id"],
+                    )
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=502,
@@ -193,7 +258,6 @@ class AuthService:
             )
 
         environment = flow["environment"]
-        account_suffix = flow["phone"][-4:]
         device_id = flow["device_id"]
         del self._flows[payload.flow_id]
 
@@ -206,7 +270,7 @@ class AuthService:
             access_token=session_token,
             refresh_token=token_urlsafe(24),
             user_name="Nubra User",
-            account_id=f"NUBRA-{account_suffix}",
+            account_id=client_code or f"NUBRA-{flow['phone'][-4:]}",
             device_id=device_id,
             environment=environment,
             broker="Nubra",
@@ -220,13 +284,16 @@ class AuthService:
             with httpx.Client(timeout=15.0) as client:
                 response = client.get(
                     f"{base_url}/userinfo",
-                    headers={
-                        "Authorization": f"Bearer {payload.session_token}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "x-device-id": payload.device_id,
-                    },
+                    headers=self._session_headers(payload.session_token, payload.device_id),
                 )
+                account_id = None
+                if response.status_code < 400:
+                    account_id = self._fetch_client_code(
+                        client,
+                        base_url=base_url,
+                        session_token=payload.session_token,
+                        device_id=payload.device_id,
+                    )
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=502,
@@ -238,6 +305,7 @@ class AuthService:
                 active=False,
                 environment=payload.environment,
                 expires_at_utc=self._decode_expiry(payload.session_token),
+                account_id=None,
                 message=self._extract_error(response),
             )
 
@@ -251,6 +319,7 @@ class AuthService:
             active=True,
             environment=payload.environment,
             expires_at_utc=self._decode_expiry(payload.session_token),
+            account_id=account_id,
             message="Session is active.",
         )
 

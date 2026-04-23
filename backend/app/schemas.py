@@ -58,6 +58,7 @@ class SessionStatusResponse(BaseModel):
     active: bool
     environment: Environment
     expires_at_utc: str | None
+    account_id: str | None = None
     message: str
 
 
@@ -233,7 +234,8 @@ class ScalperSnapshotRequest(BaseModel):
     underlying: str = Field(min_length=2, max_length=64)
     exchange: Literal["NSE", "BSE"] = "NSE"
     interval: Interval = "1m"
-    strike_price: int = Field(ge=1, le=1000000)
+    ce_strike_price: int = Field(ge=1, le=1000000)
+    pe_strike_price: int = Field(ge=1, le=1000000)
     expiry: str | None = Field(default=None, max_length=64)
     lookback_days: int = Field(default=5, ge=1, le=15)
 
@@ -262,7 +264,10 @@ class ScalperResolvedOptionPair(BaseModel):
     underlying: str
     exchange: str
     expiry: str | None
-    strike_price: int
+    ce_strike_price: int
+    pe_strike_price: int
+    call_ref_id: int | None
+    put_ref_id: int | None
     call_display_name: str
     put_display_name: str
     lot_size: int | None
@@ -276,6 +281,143 @@ class ScalperSnapshotResponse(BaseModel):
     call_option: ScalperChartPanel
     put_option: ScalperChartPanel
     option_pair: ScalperResolvedOptionPair
+
+
+class ScalperOrderRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    instrument_ref_id: int = Field(ge=1)
+    instrument_display_name: str = Field(min_length=1, max_length=128)
+    option_leg: Literal["CE", "PE"]
+    order_side: Literal["ORDER_SIDE_BUY", "ORDER_SIDE_SELL"]
+    lots: int = Field(default=1, ge=1, le=1000)
+    lot_size: int = Field(ge=1, le=1000000)
+    tick_size: int = Field(ge=1, le=1000000)
+    ltp_price: float | None = Field(default=None, ge=0)
+    order_delivery_type: Literal["ORDER_DELIVERY_TYPE_CNC", "ORDER_DELIVERY_TYPE_IDAY"] = "ORDER_DELIVERY_TYPE_IDAY"
+    exchange: Literal["NSE", "BSE"] = "NSE"
+    tag: str | None = Field(default=None, max_length=128)
+
+
+class ScalperOrderResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    order_id: int | None
+    order_status: str | None
+    order_side: Literal["ORDER_SIDE_BUY", "ORDER_SIDE_SELL"]
+    order_qty: int
+    order_price: float | None
+    lots: int
+    instrument_display_name: str
+
+
+class DeltaNeutralPairRow(BaseModel):
+    rank: int
+    underlying: str
+    exchange: str
+    expiry: str | None
+    ce_strike_price: int
+    pe_strike_price: int
+    call_display_name: str
+    put_display_name: str
+    spot_price: float | None
+    center_strike: int
+    width_points: int
+    call_delta: float | None
+    put_delta: float | None
+    net_delta: float | None
+    neutrality_score: float
+    lot_size: int | None
+    tick_size: int | None
+
+
+class DeltaNeutralPairsRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    underlying: str = Field(min_length=2, max_length=64)
+    exchange: Literal["NSE", "BSE"] = "NSE"
+    expiry: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class DeltaNeutralPairsResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    pairs: list[DeltaNeutralPairRow]
+
+
+class ExpiryHeatmapRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    underlying: str = Field(min_length=2, max_length=64)
+    exchange: Literal["NSE", "BSE"] = "NSE"
+    interval: Interval = "1m"
+    expiry: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=9, ge=3, le=15)
+
+
+class ExpiryHeatmapRow(BaseModel):
+    strike_price: int
+    expiry: str | None
+    distance_from_spot: int
+    call_display_name: str | None
+    put_display_name: str | None
+    call_last_price: float | None
+    put_last_price: float | None
+    call_volume: float | None
+    put_volume: float | None
+    call_change_pct: float | None
+    put_change_pct: float | None
+    call_heat: float
+    put_heat: float
+
+
+class ExpiryHeatmapResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    underlying: str
+    exchange: str
+    expiry: str | None
+    interval: Interval
+    spot_price: float | None
+    center_strike: int | None
+    rows: list[ExpiryHeatmapRow]
+
+
+class ScalperVolumeBreakoutRequest(BaseModel):
+    session_token: str = Field(min_length=10)
+    device_id: str = Field(min_length=3, max_length=128)
+    environment: Environment
+    exchange: Literal["NSE", "BSE"] = "NSE"
+    interval: Interval = "1m"
+    lookback_days: int = Field(default=5, ge=3, le=20)
+    limit: int = Field(default=30, ge=1, le=200)
+
+
+class ScalperVolumeBreakoutRow(BaseModel):
+    rank: int
+    underlying: str
+    display_name: str
+    exchange: str
+    last_price: float | None
+    current_volume: float | None
+    average_volume: float | None
+    volume_ratio: float
+    price_change_pct: float | None
+    breakout_strength: float
+    status_label: str
+    nearest_expiry: str | None
+    atm_strike: int | None
+
+
+class ScalperVolumeBreakoutResponse(BaseModel):
+    status: Literal["success"]
+    message: str
+    lookback_days: int
+    rows: list[ScalperVolumeBreakoutRow]
 
 
 class StockSearchRequest(BaseModel):
@@ -450,8 +592,19 @@ class StrategyLiveAlert(BaseModel):
     detail: str
 
 
+class StrategyLivePosition(BaseModel):
+    instrument: str
+    quantity: int
+    entry_side: str
+    entry_price: float
+    entry_time_ist: str
+    entry_order_id: int | None
+    entry_order_status: str | None
+
+
 class StrategyLiveStatusResponse(BaseModel):
     running: bool
+    environment: Environment | None
     instruments: list[str]
     interval: Interval | None
     entry_side: Literal["BUY", "SELL"] | None
@@ -461,6 +614,7 @@ class StrategyLiveStatusResponse(BaseModel):
     last_signal: str | None
     last_error: str | None
     alerts: list[StrategyLiveAlert]
+    positions: dict[str, StrategyLivePosition]
 
 
 class StrategyLiveStartResponse(BaseModel):

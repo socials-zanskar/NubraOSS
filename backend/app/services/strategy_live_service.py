@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.services.instrument_service import instrument_service
-from app.services.strategy_backtester import ParsedStrategy, parse_strategy
+from app.services.strategy_backtester import ParsedStrategy, parse_strategy, resolve_stop_target_exit
 from app.services.strategy_data import (
     IST_TZ,
     fetch_with_warmup,
@@ -21,7 +21,7 @@ from app.services.strategy_data import (
     interval_is_intraday,
     required_history_bars,
 )
-from app.services.strategy_eval import evaluate_all, iter_expressions
+from app.services.strategy_eval import evaluate_node, iter_expressions_from_node
 
 IST = ZoneInfo(IST_TZ)
 MARKET_OPEN = dt_time(hour=9, minute=15)
@@ -255,7 +255,7 @@ class StrategyLiveService:
     def _order_delivery_type(self, strategy: ParsedStrategy) -> str:
         if strategy.entry_side == "SELL":
             return "ORDER_DELIVERY_TYPE_IDAY"
-        return "ORDER_DELIVERY_TYPE_IDAY" if strategy.holding_type == "Intraday" else "ORDER_DELIVERY_TYPE_CNC"
+        return "ORDER_DELIVERY_TYPE_IDAY" if strategy.holding_type == "intraday" else "ORDER_DELIVERY_TYPE_CNC"
 
     def _entry_quantity(self, capital: float, price: float, lot_size: int) -> int:
         if capital <= 0 or price <= 0:
@@ -373,45 +373,52 @@ class StrategyLiveService:
         strategy = runtime.strategy
 
         if strategy.exit_mode in {"sl_tgt", "both"}:
+            stop_price: float | None = None
+            target_price: float | None = None
             if position.entry_side == "BUY":
                 if strategy.stop_loss_pct is not None:
                     stop_price = position.entry_price * (1 - strategy.stop_loss_pct / 100.0)
-                    if float(last_bar["low"]) <= stop_price:
-                        return "STOP_LOSS", stop_price
                 if strategy.target_pct is not None:
                     target_price = position.entry_price * (1 + strategy.target_pct / 100.0)
-                    if float(last_bar["high"]) >= target_price:
-                        return "TARGET", target_price
             else:
                 if strategy.stop_loss_pct is not None:
                     stop_price = position.entry_price * (1 + strategy.stop_loss_pct / 100.0)
-                    if float(last_bar["high"]) >= stop_price:
-                        return "STOP_LOSS", stop_price
                 if strategy.target_pct is not None:
                     target_price = position.entry_price * (1 - strategy.target_pct / 100.0)
-                    if float(last_bar["low"]) <= target_price:
-                        return "TARGET", target_price
+            exit_reason, exit_price = resolve_stop_target_exit(
+                side=position.entry_side,  # type: ignore[arg-type]
+                bar_open=float(last_bar["open"]),
+                bar_high=float(last_bar["high"]),
+                bar_low=float(last_bar["low"]),
+                stop_price=stop_price if strategy.stop_loss_pct is not None else None,
+                target_price=target_price if strategy.target_pct is not None else None,
+                conflict_resolution=strategy.stop_target_conflict,
+            )
+            if exit_reason is not None and exit_price is not None:
+                return exit_reason.upper(), exit_price
 
-        if strategy.exit_mode in {"condition", "both"} and strategy.exit_conditions:
-            if evaluate_all(enriched, last_index, strategy.exit_conditions):
+        if strategy.exit_mode in {"condition", "both"} and strategy.exit_conditions is not None:
+            if evaluate_node(enriched, last_index, strategy.exit_conditions):
                 return "EXIT_CONDITION", float(last_bar["close"])
 
         candle_timestamp = last_bar["timestamp"]
         candle_dt = candle_timestamp.to_pydatetime() if hasattr(candle_timestamp, "to_pydatetime") else self._current_ist()
         _, session_end = self._strategy_session_times(strategy)
         candle_time = dt_time(hour=candle_dt.hour, minute=candle_dt.minute, second=candle_dt.second)
-        if strategy.holding_type == "Intraday" and candle_time >= session_end:
+        if strategy.holding_type == "intraday" and candle_time >= session_end:
             return "SESSION_CLOSE", float(last_bar["close"])
 
         return None, None
 
     def _evaluate_once(self, runtime: LiveRuntime, now_ist: datetime) -> None:
         strategy = runtime.strategy
-        all_expressions = iter_expressions(strategy.entry_conditions) + iter_expressions(strategy.exit_conditions)
+        all_expressions = iter_expressions_from_node(strategy.entry_conditions)
+        if strategy.exit_conditions is not None:
+            all_expressions.extend(iter_expressions_from_node(strategy.exit_conditions))
         warmup_bars = max((required_history_bars(expr, strategy.interval) for expr in all_expressions), default=0)
 
-        requested_end = now_ist
-        requested_start = now_ist - timedelta(days=10)
+        requested_end = pd.Timestamp(now_ist)
+        requested_start = pd.Timestamp(requested_end - pd.Timedelta(days=10))
         last_error: str | None = None
 
         for symbol in strategy.instruments:
@@ -468,12 +475,12 @@ class StrategyLiveService:
                         )
                     continue
 
-                if not evaluate_all(enriched, last_index, strategy.entry_conditions):
+                if not evaluate_node(enriched, last_index, strategy.entry_conditions):
                     continue
 
                 listing = self._resolve_instrument(runtime, symbol)
                 quantity = self._entry_quantity(
-                    strategy.initial_capital,
+                    strategy.capital_per_instrument,
                     market_price,
                     int(listing["lot_size"]),
                 )
@@ -580,6 +587,7 @@ class StrategyLiveService:
         if runtime is None:
             return {
                 "running": False,
+                "environment": None,
                 "instruments": [],
                 "interval": None,
                 "entry_side": None,
@@ -589,9 +597,11 @@ class StrategyLiveService:
                 "last_signal": None,
                 "last_error": None,
                 "alerts": [],
+                "positions": {},
             }
         return {
             "running": runtime.running,
+            "environment": runtime.environment,
             "instruments": runtime.strategy.instruments,
             "interval": runtime.strategy.interval,
             "entry_side": runtime.strategy.entry_side,
@@ -612,6 +622,18 @@ class StrategyLiveService:
                 }
                 for alert in runtime.alerts
             ],
+            "positions": {
+                symbol: {
+                    "instrument": pos.instrument,
+                    "quantity": pos.quantity,
+                    "entry_side": pos.entry_side,
+                    "entry_price": pos.entry_price,
+                    "entry_time_ist": pos.entry_time_ist,
+                    "entry_order_id": pos.entry_order_id,
+                    "entry_order_status": pos.entry_order_status,
+                }
+                for symbol, pos in runtime.positions.items()
+            },
         }
 
     def start(

@@ -133,8 +133,11 @@ class ScalperLiveSession:
                     "ref_id": None,
                 }
                 self._panel_lookup[data.instrument.strip().upper()] = panel
-                if data.candles:
-                    self._last_total_volume[panel] = data.candles[-1].volume or None
+                # Historical candles expose bucket volume, while the websocket feed carries
+                # cumulative session volume. Seeding the live baseline from the last bucket
+                # volume creates an artificial first-tick spike that crushes the histogram.
+                # Start the cumulative baseline on the first live tick instead.
+                self._last_total_volume[panel] = None
 
             self._resolve_tick_subscriptions()
 

@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import PostLoginFooter from './PostLoginFooter'
 import StrategyPreviewChart, { type StrategyPreviewCandlePoint } from './StrategyPreviewChart'
 
 type Environment = 'PROD' | 'UAT'
@@ -208,8 +209,19 @@ interface StrategyLiveAlert {
   detail: string
 }
 
+interface StrategyLivePosition {
+  instrument: string
+  quantity: number
+  entry_side: string
+  entry_price: number
+  entry_time_ist: string
+  entry_order_id: number | null
+  entry_order_status: string | null
+}
+
 interface StrategyLiveStatus {
   running: boolean
+  environment: Environment | null
   instruments: string[]
   interval: Interval | null
   entry_side: 'BUY' | 'SELL' | null
@@ -219,6 +231,7 @@ interface StrategyLiveStatus {
   last_signal: string | null
   last_error: string | null
   alerts: StrategyLiveAlert[]
+  positions: Record<string, StrategyLivePosition>
 }
 
 interface Props {
@@ -346,8 +359,21 @@ function rhsRuleForExpr(expr: IndicatorExprState): {
 
 function defaultOperatorForExpr(expr: IndicatorExprState): OperatorId {
   const type = expr.type.toUpperCase()
-  if (type === 'CCI' || type === 'ATR') return 'greater_than'
+  if (type === 'RSI' || type === 'CCI' || type === 'ATR') return 'greater_than'
   return 'crosses_above'
+}
+
+function nodeContainsCrossOperator(node: StrategyNodeState): boolean {
+  if (isConditionGroup(node)) return node.items.some(nodeContainsCrossOperator)
+  return node.operator === 'crosses_above' || node.operator === 'crosses_below'
+}
+
+function groupNeedsCrossTimingHint(group: ConditionGroupState | null): boolean {
+  if (!group) return false
+  if (group.logic === 'AND' && group.items.length > 1 && group.items.some(nodeContainsCrossOperator)) {
+    return true
+  }
+  return group.items.some((item) => isConditionGroup(item) && groupNeedsCrossTimingHint(item))
 }
 
 function alternatePeriod(value: number | string | undefined, fallback: number): number {
@@ -602,7 +628,8 @@ export default function StrategyBuilder({
   const [backtestResult, setBacktestResult] = useState<StrategyBacktestResponse | null>(null)
   const [backtestError, setBacktestError] = useState('')
   const [backtestInstrument, setBacktestInstrument] = useState('')
-  const [showFullLog, setShowFullLog] = useState(false)
+  // showFullLog removed — we now only show triggered bars
+  const [execLogOpen, setExecLogOpen] = useState(false)
   const [previewChart, setPreviewChart] = useState<StrategyPreviewChartPanel | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
@@ -610,6 +637,7 @@ export default function StrategyBuilder({
   const [liveStatus, setLiveStatus] = useState<StrategyLiveStatus | null>(null)
   const [liveBusy, setLiveBusy] = useState(false)
   const [liveError, setLiveError] = useState('')
+  const [showProdConfirm, setShowProdConfirm] = useState(false)
   const [defaultsSeeded, setDefaultsSeeded] = useState({ entry: false, exit: false })
   const primaryInstrument = instruments[0] ?? ''
 
@@ -1058,19 +1086,18 @@ export default function StrategyBuilder({
       setBacktestResult(result)
       setBacktestInstrument(result.instruments[0]?.symbol ?? '')
     } catch (err) {
-      setBacktestError(err instanceof Error ? err.message : 'Backtest failed.')
+      const msg = err instanceof Error ? err.message : 'Backtest failed.'
+      if (environment === 'UAT') {
+        setBacktestError(`${msg}\n\n⚠️ Note: Backtesting in UAT environment may encounter database errors due to Nubra UAT limitations. Please switch to PROD environment for reliable backtesting.`)
+      } else {
+        setBacktestError(msg)
+      }
     } finally {
       setBacktestRunning(false)
     }
   }
 
-  async function handleDeployLive() {
-    setLiveError('')
-    const validationError = validateStrategy()
-    if (validationError) {
-      setLiveError(validationError)
-      return
-    }
+  async function _doDeployLive() {
     setLiveBusy(true)
     try {
       const response = await fetch(`${apiBaseUrl}/api/strategy/live/start`, {
@@ -1095,6 +1122,25 @@ export default function StrategyBuilder({
     }
   }
 
+  function handleDeployLive() {
+    setLiveError('')
+    const validationError = validateStrategy()
+    if (validationError) {
+      setLiveError(validationError)
+      return
+    }
+    if (environment === 'PROD') {
+      setShowProdConfirm(true)
+      return
+    }
+    void _doDeployLive()
+  }
+
+  function handleProdConfirm() {
+    setShowProdConfirm(false)
+    void _doDeployLive()
+  }
+
   async function handleStopLive() {
     setLiveBusy(true)
     try {
@@ -1115,6 +1161,7 @@ export default function StrategyBuilder({
             {'< Back to Dashboard'}
           </button>
           <section className="error-banner dashboard-error">{catalogError}</section>
+          <PostLoginFooter />
         </section>
       </main>
     )
@@ -1133,6 +1180,7 @@ export default function StrategyBuilder({
               <p>Loading indicator catalog...</p>
             </div>
           </section>
+          <PostLoginFooter />
         </section>
       </main>
     )
@@ -1144,6 +1192,48 @@ export default function StrategyBuilder({
   const entryDepth = groupDepth(entryGroup)
   const exitDepth = groupDepth(exitGroup)
   const isIntradayChart = !['1d', '1w', '1mt'].includes(intervalValue)
+  const entryCrossTimingHint = groupNeedsCrossTimingHint(entryGroup)
+  const exitCrossTimingHint = groupNeedsCrossTimingHint(exitGroup)
+
+  if (showProdConfirm) {
+    return (
+      <main className="dashboard-shell">
+        <section className="dashboard-panel">
+          <section className="dashboard-module-card strategy-card" style={{ maxWidth: 480, margin: '4rem auto', textAlign: 'center' }}>
+            <header className="strategy-card-head" style={{ justifyContent: 'center' }}>
+              <h2 style={{ color: 'var(--color-neg, #ef4444)' }}>Deploy to PROD?</h2>
+            </header>
+            <p style={{ margin: '1rem 0 0.5rem' }}>
+              You are about to deploy this strategy live on <strong>Production</strong>.
+            </p>
+            <p style={{ margin: '0 0 1.5rem', fontSize: '0.85rem', opacity: 0.7 }}>
+              Real orders will be placed on the exchange using your live account. This involves real financial risk. Confirm only if you have tested this strategy in UAT and are ready to trade live.
+            </p>
+            <div className="strategy-actions" style={{ justifyContent: 'center', gap: '1rem' }}>
+              <button
+                className="primary-button"
+                type="button"
+                style={{ background: 'var(--color-neg, #ef4444)', borderColor: 'var(--color-neg, #ef4444)' }}
+                onClick={handleProdConfirm}
+                disabled={liveBusy}
+              >
+                {liveBusy ? 'Deploying...' : 'Yes, Deploy to PROD'}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowProdConfirm(false)}
+                disabled={liveBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+          <PostLoginFooter />
+        </section>
+      </main>
+    )
+  }
 
   return (
     <main className="dashboard-shell strategy-builder-workspace">
@@ -1288,18 +1378,26 @@ export default function StrategyBuilder({
             </div>
 
             {entryGroup ? (
-              <ConditionGroupEditor
-                catalog={catalog}
-                indicatorByType={indicatorByType}
-                group={entryGroup}
-                depth={0}
-                allowRemove={false}
-                onLogicChange={setEntryGroupLogic}
-                onAddCondition={addEntryCondition}
-                onAddGroup={addEntryGroup}
-                onUpdateCondition={updateEntryCondition}
-                onRemoveNode={removeEntryNode}
-              />
+              <>
+                <ConditionGroupEditor
+                  catalog={catalog}
+                  indicatorByType={indicatorByType}
+                  group={entryGroup}
+                  depth={0}
+                  allowRemove={false}
+                  onLogicChange={setEntryGroupLogic}
+                  onAddCondition={addEntryCondition}
+                  onAddGroup={addEntryGroup}
+                  onUpdateCondition={updateEntryCondition}
+                  onRemoveNode={removeEntryNode}
+                />
+                {entryCrossTimingHint ? (
+                  <div className="builder-status-note">
+                    <span>`crosses above/below` only fires on the crossover candle.</span>
+                    <span>Inside an AND group, every cross still has to line up on that same candle. For filters like RSI already above 30, use `greater than` / `less than`.</span>
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div className="conditions-empty">Loading entry builder...</div>
             )}
@@ -1358,18 +1456,26 @@ export default function StrategyBuilder({
                   {exitConditionCount} rules - depth {exitDepth}
                 </div>
                 {exitGroup ? (
-                  <ConditionGroupEditor
-                    catalog={catalog}
-                    indicatorByType={indicatorByType}
-                    group={exitGroup}
-                    depth={0}
-                    allowRemove={false}
-                    onLogicChange={setExitGroupLogic}
-                    onAddCondition={addExitCondition}
-                    onAddGroup={addExitGroup}
-                    onUpdateCondition={updateExitCondition}
-                    onRemoveNode={removeExitNode}
-                  />
+                  <>
+                    <ConditionGroupEditor
+                      catalog={catalog}
+                      indicatorByType={indicatorByType}
+                      group={exitGroup}
+                      depth={0}
+                      allowRemove={false}
+                      onLogicChange={setExitGroupLogic}
+                      onAddCondition={addExitCondition}
+                      onAddGroup={addExitGroup}
+                      onUpdateCondition={updateExitCondition}
+                      onRemoveNode={removeExitNode}
+                    />
+                    {exitCrossTimingHint ? (
+                      <div className="builder-status-note">
+                        <span>`crosses above/below` is evaluated as a one-candle event here too.</span>
+                        <span>If you want an exit while a value stays above or below a level, switch that rule to `greater than` / `less than`.</span>
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="conditions-empty">Loading exit builder...</div>
                 )}
@@ -1585,7 +1691,7 @@ export default function StrategyBuilder({
                 onClick={handleDeployLive}
                 disabled={liveBusy || (liveStatus?.running ?? false)}
               >
-                {liveBusy ? 'Deploying...' : liveStatus?.running ? 'Live Running' : 'Deploy Live'}
+                {liveBusy ? 'Deploying...' : liveStatus?.running ? 'Live Running' : `Deploy Live${environment === 'PROD' ? ' (PROD)' : ' (UAT)'}`}
               </button>
             </div>
                 {backtestError ? <section className="error-banner">{backtestError}</section> : null}
@@ -1808,49 +1914,48 @@ export default function StrategyBuilder({
                       )}
                     </div>
 
-                    {/* Signal log (triggered days only by default) */}
-                    <div className="conditions-header" style={{ marginTop: '1.25rem' }}>
+                    {/* Execution log — collapsible, hidden by default */}
+                    <div
+                      className="conditions-header"
+                      style={{ marginTop: '1.25rem', cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => setExecLogOpen((prev) => !prev)}
+                    >
                       <span>
-                        Signal Log — {showFullLog ? `All ${selectedInstrumentResult.daily_signal_log.length} bars` : `${selectedInstrumentResult.triggered_days.length} triggered`}
+                        {execLogOpen ? '▾' : '▸'} Execution Log — {selectedInstrumentResult.triggered_days.length} triggered bars
                       </span>
-                      <button
-                        type="button"
-                        className="chip-add-button"
-                        onClick={() => setShowFullLog((prev) => !prev)}
-                      >
-                        {showFullLog ? 'Show Triggered Only' : 'Show All Bars'}
-                      </button>
                     </div>
-                    <div className="trade-table">
-                      <div className="trade-row trade-head trade-head-signal">
-                        <span>Timestamp</span>
-                        <span>Close</span>
-                        <span>Action</span>
-                        <span>Entry?</span>
-                        <span>Exit?</span>
-                        <span>State</span>
-                        <span>SL Price</span>
-                        <span>TGT Price</span>
+                    {execLogOpen ? (
+                      <div className="trade-table">
+                        <div className="trade-row trade-head trade-head-signal">
+                          <span>Timestamp</span>
+                          <span>Close</span>
+                          <span>Action</span>
+                          <span>Entry?</span>
+                          <span>Exit?</span>
+                          <span>State</span>
+                          <span>SL Price</span>
+                          <span>TGT Price</span>
+                        </div>
+                        {selectedInstrumentResult.triggered_days.length === 0 ? (
+                          <div className="conditions-empty">No trade executions in this range.</div>
+                        ) : (
+                          selectedInstrumentResult.triggered_days
+                            .slice(-200)
+                            .map((row, idx) => (
+                              <div className="trade-row trade-row-triggered" key={`${row.timestamp}-${idx}`}>
+                                <span>{row.timestamp}</span>
+                                <span>₹{row.close.toFixed(2)}</span>
+                                <span className="trade-reason">{row.action.replace(/_/g, ' ')}</span>
+                                <span>{row.entry_signal ? '✓' : '—'}</span>
+                                <span>{row.exit_signal ? '✓' : '—'}</span>
+                                <span>{row.position_state.replace(/_/g, ' ')}</span>
+                                <span>{row.stop_loss_price != null ? `₹${row.stop_loss_price.toFixed(2)}` : '—'}</span>
+                                <span>{row.target_price != null ? `₹${row.target_price.toFixed(2)}` : '—'}</span>
+                              </div>
+                            ))
+                        )}
                       </div>
-                      {(showFullLog ? selectedInstrumentResult.daily_signal_log : selectedInstrumentResult.triggered_days).length === 0 ? (
-                        <div className="conditions-empty">No signal events in this range.</div>
-                      ) : (
-                        (showFullLog ? selectedInstrumentResult.daily_signal_log : selectedInstrumentResult.triggered_days)
-                          .slice(-200)
-                          .map((row, idx) => (
-                            <div className={`trade-row ${row.action !== 'hold' ? 'trade-row-triggered' : ''}`} key={`${row.timestamp}-${idx}`}>
-                              <span>{row.timestamp}</span>
-                              <span>₹{row.close.toFixed(2)}</span>
-                              <span className="trade-reason">{row.action.replace(/_/g, ' ')}</span>
-                              <span>{row.entry_signal ? '✓' : '—'}</span>
-                              <span>{row.exit_signal ? '✓' : '—'}</span>
-                              <span>{row.position_state.replace(/_/g, ' ')}</span>
-                              <span>{row.stop_loss_price != null ? `₹${row.stop_loss_price.toFixed(2)}` : '—'}</span>
-                              <span>{row.target_price != null ? `₹${row.target_price.toFixed(2)}` : '—'}</span>
-                            </div>
-                          ))
-                      )}
-                    </div>
+                    ) : null}
                   </>
                 ) : null}
               </article>
@@ -1862,9 +1967,31 @@ export default function StrategyBuilder({
             <article className="dashboard-module-card strategy-card">
               <header className="strategy-card-head">
                 <h2>Live Runner</h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  {liveStatus.environment ? (
+                    <span className={`strategy-badge${liveStatus.environment === 'PROD' ? ' env-prod-badge' : ' env-uat-badge'}`}>
+                      {liveStatus.environment}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    style={{
+                      background: 'var(--color-neg, #ef4444)',
+                      borderColor: 'var(--color-neg, #ef4444)',
+                      fontSize: '0.8rem',
+                      padding: '0.4rem 1rem',
+                    }}
+                    onClick={handleStopLive}
+                    disabled={liveBusy}
+                  >
+                    {liveBusy ? 'Stopping...' : '⏹ Stop Live Strategy'}
+                  </button>
+                </div>
               </header>
               <div className="status-list">
-                <div><span>Status</span><strong>Running</strong></div>
+                <div><span>Status</span><strong style={{ color: 'var(--color-pos, #22c55e)' }}>● Running</strong></div>
+                <div><span>Environment</span><strong className={liveStatus.environment === 'PROD' ? 'pnl-neg' : 'pnl-pos'}>{liveStatus.environment ?? '-'}</strong></div>
                 <div><span>Market</span><strong>{liveStatus.market_status}</strong></div>
                 <div><span>Instruments</span><strong>{liveStatus.instruments.join(', ')}</strong></div>
                 <div><span>Interval</span><strong>{liveStatus.interval}</strong></div>
@@ -1872,7 +1999,38 @@ export default function StrategyBuilder({
                 <div><span>Last Run</span><strong>{liveStatus.last_run_ist ?? '-'}</strong></div>
                 <div><span>Next Run</span><strong>{liveStatus.next_run_ist ?? '-'}</strong></div>
                 <div><span>Last Signal</span><strong>{liveStatus.last_signal ?? '-'}</strong></div>
+                {liveStatus.last_error ? (
+                  <div><span>Last Error</span><strong className="pnl-neg">{liveStatus.last_error}</strong></div>
+                ) : null}
               </div>
+
+              {Object.keys(liveStatus.positions).length > 0 ? (
+                <>
+                  <h3 style={{ margin: '1rem 0 0.5rem', fontSize: '0.875rem', fontWeight: 600 }}>Open Positions</h3>
+                  <div className="trade-table">
+                    <div className="trade-row trade-head">
+                      <span>Instrument</span>
+                      <span>Side</span>
+                      <span>Qty</span>
+                      <span>Entry Price</span>
+                      <span>Entry Time</span>
+                      <span>Order ID</span>
+                    </div>
+                    {Object.values(liveStatus.positions).map((pos) => (
+                      <div className="trade-row" key={pos.instrument}>
+                        <span>{pos.instrument}</span>
+                        <span>{pos.entry_side}</span>
+                        <span>{pos.quantity}</span>
+                        <span>₹{pos.entry_price.toFixed(2)}</span>
+                        <span>{pos.entry_time_ist}</span>
+                        <span>{pos.entry_order_id ?? '-'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+
+              <h3 style={{ margin: '1rem 0 0.5rem', fontSize: '0.875rem', fontWeight: 600 }}>Alerts</h3>
               <div className="trade-table">
                 <div className="trade-row trade-head">
                   <span>Time</span>
@@ -1890,7 +2048,7 @@ export default function StrategyBuilder({
                       <span>{alert.triggered_at_ist}</span>
                       <span>{alert.instrument}</span>
                       <span>{alert.event}</span>
-                      <span>{alert.price.toFixed(2)}</span>
+                      <span>₹{alert.price.toFixed(2)}</span>
                       <span>{alert.candle_time_ist}</span>
                       <span>{alert.detail}</span>
                     </div>
@@ -1900,6 +2058,7 @@ export default function StrategyBuilder({
             </article>
           ) : null}
         </form>
+        <PostLoginFooter />
       </section>
     </main>
   )

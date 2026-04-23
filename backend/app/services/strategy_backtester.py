@@ -385,6 +385,54 @@ def _calc_brokerage(trade_value: float, is_intraday: bool, cost_config: CostConf
     return leg  # per leg; caller multiplies by 2 for round-trip
 
 
+def resolve_stop_target_exit(
+    *,
+    side: Side,
+    bar_open: float,
+    bar_high: float,
+    bar_low: float,
+    stop_price: float | None,
+    target_price: float | None,
+    conflict_resolution: ConflictResolution,
+) -> tuple[str | None, float | None]:
+    if side == "BUY":
+        if stop_price is not None and bar_open <= stop_price:
+            return "stop_loss", bar_open
+        if target_price is not None and bar_open >= target_price:
+            return "target", bar_open
+
+        stop_hit = stop_price is not None and bar_low <= stop_price
+        target_hit = target_price is not None and bar_high >= target_price
+
+        if stop_hit and target_hit:
+            if conflict_resolution == "target":
+                return "target", target_price
+            return "stop_loss", stop_price
+        if stop_hit:
+            return "stop_loss", stop_price
+        if target_hit:
+            return "target", target_price
+        return None, None
+
+    if stop_price is not None and bar_open >= stop_price:
+        return "stop_loss", bar_open
+    if target_price is not None and bar_open <= target_price:
+        return "target", bar_open
+
+    stop_hit = stop_price is not None and bar_high >= stop_price
+    target_hit = target_price is not None and bar_low <= target_price
+
+    if stop_hit and target_hit:
+        if conflict_resolution == "target":
+            return "target", target_price
+        return "stop_loss", stop_price
+    if stop_hit:
+        return "stop_loss", stop_price
+    if target_hit:
+        return "target", target_price
+    return None, None
+
+
 def _max_drawdown_pct(equity_points: list[float]) -> float:
     if not equity_points:
         return 0.0
@@ -594,54 +642,15 @@ def _run_instrument(
         # Phase B: SL / Target intrabar check
         # ================================
         if in_position and strategy.exit_mode in {"sl_tgt", "both"}:
-            exit_reason_sl_tgt: str | None = None
-            exit_price_override: float | None = None
-
-            if strategy.entry_side == "BUY":
-                # Gap-through stop at open
-                if stop_loss_price is not None and bar_open <= stop_loss_price:
-                    exit_reason_sl_tgt = "stop_loss"
-                    exit_price_override = bar_open
-                # Intrabar stop
-                elif stop_loss_price is not None and bar_low <= stop_loss_price:
-                    exit_reason_sl_tgt = "stop_loss"
-                    exit_price_override = stop_loss_price
-
-                if exit_reason_sl_tgt is None:
-                    # Gap-through target at open
-                    if target_price is not None and bar_open >= target_price:
-                        exit_reason_sl_tgt = "target"
-                        exit_price_override = bar_open
-                    # Intrabar target
-                    elif target_price is not None and bar_high >= target_price:
-                        exit_reason_sl_tgt = "target"
-                        exit_price_override = target_price
-
-                # Conflict resolution when both would fire this bar
-                if exit_reason_sl_tgt is None and stop_loss_price is not None and target_price is not None:
-                    if bar_low <= stop_loss_price and bar_high >= target_price:
-                        if strategy.stop_target_conflict == "stop":
-                            exit_reason_sl_tgt = "stop_loss"
-                            exit_price_override = stop_loss_price
-                        else:
-                            exit_reason_sl_tgt = "target"
-                            exit_price_override = target_price
-            else:
-                # SELL side
-                if stop_loss_price is not None and bar_open >= stop_loss_price:
-                    exit_reason_sl_tgt = "stop_loss"
-                    exit_price_override = bar_open
-                elif stop_loss_price is not None and bar_high >= stop_loss_price:
-                    exit_reason_sl_tgt = "stop_loss"
-                    exit_price_override = stop_loss_price
-
-                if exit_reason_sl_tgt is None:
-                    if target_price is not None and bar_open <= target_price:
-                        exit_reason_sl_tgt = "target"
-                        exit_price_override = bar_open
-                    elif target_price is not None and bar_low <= target_price:
-                        exit_reason_sl_tgt = "target"
-                        exit_price_override = target_price
+            exit_reason_sl_tgt, exit_price_override = resolve_stop_target_exit(
+                side=strategy.entry_side,
+                bar_open=bar_open,
+                bar_high=bar_high,
+                bar_low=bar_low,
+                stop_price=stop_loss_price,
+                target_price=target_price,
+                conflict_resolution=strategy.stop_target_conflict,
+            )
 
             if exit_reason_sl_tgt is not None and exit_price_override is not None:
                 _close_position(exit_price_override, bar, exit_reason_sl_tgt)

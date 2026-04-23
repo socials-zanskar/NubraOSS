@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from hashlib import sha1
 from types import SimpleNamespace
 from typing import Any, Iterable
 
@@ -93,7 +94,7 @@ def collect_required_expressions(expressions: Iterable[IndicatorExpr]) -> dict[s
     dedup: dict[str, IndicatorExpr] = {}
     for expr in expressions:
         # Different offsets share the same underlying column; track the deepest offset for warmup accounting.
-        key = f"{expr.type}|" + "|".join(f"{k}={v}" for k, v in expr.params) + (f"|out={expr.output}" if expr.output else "")
+        key = _computation_signature(expr)
         existing = dedup.get(key)
         if existing is None or expr.offset > existing.offset:
             dedup[key] = expr
@@ -101,20 +102,28 @@ def collect_required_expressions(expressions: Iterable[IndicatorExpr]) -> dict[s
 
 
 def column_name_for(expr: IndicatorExpr) -> str:
-    """Return the OHLCV dataframe column name that holds this indicator's values."""
+    """Return the dataframe column name that holds this indicator's computed values."""
     indicator_type = expr.type.upper()
-
-    if indicator_type == "PRICE":
-        source = expr.params_dict.get("source", "close")
-        return f"_price_{source}"
 
     if indicator_type == "VOLUME":
         return "volume"
 
-    if indicator_type == "VWAP":
-        anchor = expr.params_dict.get("anchor", "session")
-        source = expr.params_dict.get("source", "hlc3")
-        return f"_vwap_{anchor}_{source}"
+    return _signature_to_column(_computation_signature(expr))
+
+
+def _computation_signature(expr: IndicatorExpr) -> str:
+    parts = [expr.type.upper(), expr.output or "-"]
+    parts.extend(f"{key}={value}" for key, value in expr.params)
+    return "|".join(parts)
+
+
+def _signature_to_column(signature: str) -> str:
+    digest = sha1(signature.encode("utf-8")).hexdigest()[:12]
+    return f"ind_{digest}"
+
+
+def _native_output_column_for(expr: IndicatorExpr) -> str:
+    indicator_type = expr.type.upper()
 
     talib_name = talib_function_name_for_expr(expr)
     if indicator_type == "ADX":
@@ -261,11 +270,13 @@ def inject_indicator_columns(df: pd.DataFrame, expressions: Iterable[IndicatorEx
 
     for expr in dedup.values():
         indicator_type = expr.type.upper()
+        target_col = column_name_for(expr)
+        if target_col in out.columns:
+            continue
 
         if indicator_type == "PRICE":
             source = expr.params_dict.get("source", "close")
-            series = _source_series(out, source)
-            out[f"_price_{source}"] = series
+            out[target_col] = _source_series(out, source)
             continue
 
         if indicator_type == "VOLUME":
@@ -273,9 +284,6 @@ def inject_indicator_columns(df: pd.DataFrame, expressions: Iterable[IndicatorEx
             continue
 
         if indicator_type == "VWAP":
-            col = column_name_for(expr)
-            if col in out.columns:
-                continue
             source_key = expr.params_dict.get("source", "hlc3")
             anchor = expr.params_dict.get("anchor", "session")
             source = _source_series(out, source_key)
@@ -292,13 +300,11 @@ def inject_indicator_columns(df: pd.DataFrame, expressions: Iterable[IndicatorEx
 
             pv = (source * volume).groupby(group_keys).cumsum()
             vol_cum = volume.groupby(group_keys).cumsum()
-            out[col] = pv.div(vol_cum.replace(0, pd.NA))
+            out[target_col] = pv.div(vol_cum.replace(0, pd.NA))
             continue
 
         talib_name = talib_function_name_for_expr(expr)
-        target_col = column_name_for(expr)
-        if target_col in out.columns:
-            continue
+        native_col = _native_output_column_for(expr)
 
         talib_params = _talib_params_for(expr)
         # nubra_talib add_talib mutates by copying df, returns a new df with additional columns.
@@ -324,11 +330,12 @@ def inject_indicator_columns(df: pd.DataFrame, expressions: Iterable[IndicatorEx
             enriched["close"] = enriched[rename_from_close]
             enriched = enriched.drop(columns=[rename_from_close])
 
-        # Copy only the newly added indicator columns back into out
-        for col in enriched.columns:
-            if col in out.columns:
-                continue
-            out[col] = enriched[col]
+        if native_col not in enriched.columns:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Indicator {expr.type} did not produce expected column '{native_col}'.",
+            )
+        out[target_col] = enriched[native_col]
 
     return out
 
@@ -381,6 +388,8 @@ def parse_user_timestamp(value: Any, *, timezone: str, is_end: bool) -> pd.Times
             ts = ts.normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
         else:
             ts = ts.normalize()
+    # Ensure we have a pd.Timestamp (DateOffset arithmetic can return datetime.datetime)
+    ts = pd.Timestamp(ts)
     return ts.tz_convert(timezone)
 
 
@@ -401,7 +410,9 @@ def _looks_like_date_only(value: Any, parsed_timestamp: pd.Timestamp) -> bool:
 
 
 def _to_utc_string(timestamp: pd.Timestamp) -> str:
-    utc_value = timestamp.tz_convert("UTC")
+    # Ensure we have a pd.Timestamp (callers may pass datetime.datetime from DateOffset arithmetic)
+    ts = pd.Timestamp(timestamp)
+    utc_value = ts.tz_convert("UTC")
     return utc_value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
@@ -410,27 +421,29 @@ def _estimate_fetch_start(requested_start: pd.Timestamp, interval: str, warmup_b
         return requested_start
 
     value = interval.strip().lower()
+    # Note: pd.offsets.BDay / pd.DateOffset arithmetic can return datetime.datetime
+    # instead of pd.Timestamp in some pandas versions. Wrap results to guarantee type.
     if value.endswith("mt"):
-        return requested_start - pd.DateOffset(months=warmup_bars + 5)
+        return pd.Timestamp(requested_start - pd.DateOffset(months=warmup_bars + 5))
     if value.endswith("w"):
-        return requested_start - pd.Timedelta(days=max(14, warmup_bars * 10))
+        return pd.Timestamp(requested_start - pd.Timedelta(days=max(14, warmup_bars * 10)))
     if value.endswith("d"):
-        return requested_start - pd.offsets.BDay(warmup_bars + 5)
+        return pd.Timestamp(requested_start - pd.offsets.BDay(warmup_bars + 5))
     if value.endswith("h"):
         hours = int(value[:-1])
-        return requested_start - pd.Timedelta(hours=hours * warmup_bars) - pd.Timedelta(days=2)
+        return pd.Timestamp(requested_start - pd.Timedelta(hours=hours * warmup_bars) - pd.Timedelta(days=2))
     if value.endswith("m"):
         minutes = int(value[:-1])
         bars_per_session = max(1, TRADING_SESSION_MINUTES // minutes)
         sessions = max(1, math.ceil(warmup_bars / bars_per_session))
         calendar_days = max(3, sessions * 2 + 1)
-        return requested_start - pd.Timedelta(minutes=minutes * warmup_bars) - pd.Timedelta(days=calendar_days)
+        return pd.Timestamp(requested_start - pd.Timedelta(minutes=minutes * warmup_bars) - pd.Timedelta(days=calendar_days))
     if value.endswith("s"):
         seconds = int(value[:-1])
         bars_per_session = max(1, (TRADING_SESSION_MINUTES * 60) // seconds)
         sessions = max(1, math.ceil(warmup_bars / bars_per_session))
         calendar_days = max(3, sessions * 2 + 1)
-        return requested_start - pd.Timedelta(seconds=seconds * warmup_bars) - pd.Timedelta(days=calendar_days)
+        return pd.Timestamp(requested_start - pd.Timedelta(seconds=seconds * warmup_bars) - pd.Timedelta(days=calendar_days))
     raise ValueError(f"Unsupported interval '{interval}'.")
 
 
@@ -534,6 +547,8 @@ def _fetch_ohlcv_once(
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail=_extract_error(response))
         data = response.json()
+        if isinstance(data, dict) and not data.get("result") and data.get("error"):
+            raise HTTPException(status_code=502, detail=f"Nubra API error: {data['error']}")
 
     normalized = _normalize_history_payload(data, symbol)
     df = to_ohlcv_df(normalized, symbol=symbol, tz=IST_TZ, paise_to_rupee=True, interval=interval)
