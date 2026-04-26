@@ -1,0 +1,16 @@
+.venv/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.env
+*.log
+*.err.log
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.tsbuildinfo
+.pytest_cache/
+backend/.pytest_cache/
+.claude/
