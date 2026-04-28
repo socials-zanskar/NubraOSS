@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts'
 
 export type Panel = 'underlying' | 'call_option' | 'put_option'
@@ -26,7 +26,10 @@ export interface OptionPair {
   underlying: string
   exchange: string
   expiry: string | null
-  strike_price: number
+  ce_strike_price: number
+  pe_strike_price: number
+  call_ref_id: number | null
+  put_ref_id: number | null
   call_display_name: string
   put_display_name: string
   lot_size: number | null
@@ -49,7 +52,8 @@ export interface UseScalperLiveParams {
   underlying: string
   exchange: string
   interval: string
-  strike_price: number
+  ce_strike_price: number
+  pe_strike_price: number
   expiry: string | null
   lookback_days?: number
   reconnect_nonce?: number
@@ -62,6 +66,11 @@ export interface UseScalperLiveReturn {
   optionPair: OptionPair | null
   panelMeta: Record<Panel, PanelMeta> | null
   registerPanel: (panel: Panel, series: PanelSeries) => void
+  /** Monotonically increasing counter — increments on init, candle_update, and reconcile.
+   *  Use as a useMemo/useEffect dependency to react to live candle changes. */
+  liveVersion: number
+  /** Direct ref to the live candle arrays. Read inside useMemo when liveVersion changes. */
+  liveCandlesRef: React.MutableRefObject<Record<Panel, LiveCandle[]>>
 }
 
 const IST_OFFSET_S = 5.5 * 3600
@@ -110,6 +119,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
   const [connected, setConnected] = useState(false)
   const [optionPair, setOptionPair] = useState<OptionPair | null>(null)
   const [panelMeta, setPanelMeta] = useState<Record<Panel, PanelMeta> | null>(null)
+  const [liveVersion, setLiveVersion] = useState(0)
 
   const seedPanel = useCallback((panel: Panel, data: PanelData, series: PanelSeries) => {
     const candleData = data.candles.map((candle) => ({
@@ -145,6 +155,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
     if (!params.enabled) return
 
     let ws: WebSocket
+    let closedByEffectCleanup = false
 
     try {
       ws = new WebSocket(wsUrl())
@@ -167,7 +178,8 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
           underlying: params.underlying,
           exchange: params.exchange,
           interval: params.interval,
-          strike_price: params.strike_price,
+          ce_strike_price: params.ce_strike_price,
+          pe_strike_price: params.pe_strike_price,
           expiry: params.expiry,
           lookback_days: params.lookback_days ?? 5,
         }),
@@ -175,6 +187,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
     }
 
     ws.onmessage = (event: MessageEvent<string>) => {
+      if (closedByEffectCleanup) return
       let msg: Record<string, unknown>
       try {
         msg = JSON.parse(event.data) as Record<string, unknown>
@@ -226,6 +239,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
         }
 
         setStatus(`${panels.underlying.candles.length} candles loaded. Live updates streaming.`)
+        setLiveVersion((v) => v + 1)
         return
       }
 
@@ -262,6 +276,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
             color: candleColor(candle.open, candle.close, 0.45),
           })
         }
+        setLiveVersion((v) => v + 1)
         return
       }
 
@@ -299,10 +314,12 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
             })),
           )
         }
+        setLiveVersion((v) => v + 1)
       }
     }
 
     ws.onerror = () => {
+      if (closedByEffectCleanup) return
       const nextError =
         'WebSocket error. Check that the backend is running and that your Nubra session is still valid.'
       lastErrorRef.current = nextError
@@ -311,6 +328,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
     }
 
     ws.onclose = () => {
+      if (closedByEffectCleanup) return
       setConnected(false)
       if (!initReceivedRef.current && !lastErrorRef.current) {
         const nextError =
@@ -321,6 +339,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
     }
 
     return () => {
+      closedByEffectCleanup = true
       ws.close()
       pendingInitRef.current = null
       candlesRef.current = { underlying: [], call_option: [], put_option: [] }
@@ -328,21 +347,23 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
       lastErrorRef.current = ''
       setConnected(false)
       setStatus('')
+      setError('')
     }
   }, [
     params.device_id,
+    params.ce_strike_price,
     params.enabled,
     params.environment,
     params.exchange,
     params.expiry,
     params.interval,
     params.lookback_days,
+    params.pe_strike_price,
     params.reconnect_nonce,
     params.session_token,
-    params.strike_price,
     params.underlying,
     seedPanel,
   ])
 
-  return { status, error, connected, optionPair, panelMeta, registerPanel }
+  return { status, error, connected, optionPair, panelMeta, registerPanel, liveVersion, liveCandlesRef: candlesRef }
 }

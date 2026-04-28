@@ -31,6 +31,13 @@ class HistoricalFetchRequest:
 
 
 class MarketHistoryService:
+    def __init__(self) -> None:
+        self._client = httpx.Client(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
+            http2=False,
+        )
+
     def _get_base_url(self, environment: str) -> str:
         return settings.nubra_uat_base_url if environment == "UAT" else settings.nubra_prod_base_url
 
@@ -71,20 +78,19 @@ class MarketHistoryService:
             ]
         }
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                f"{self._get_base_url(request.environment)}/charts/timeseries",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {request.session_token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "x-device-id": request.device_id,
-                },
-            )
-            if response.status_code >= 400:
-                raise HTTPException(status_code=response.status_code, detail=self._extract_error(response))
-            payload = response.json()
+        response = self._client.post(
+            f"{self._get_base_url(request.environment)}/charts/timeseries",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {request.session_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-device-id": request.device_id,
+            },
+        )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=self._extract_error(response))
+        payload = response.json()
         return self._normalize(payload)
 
     def _points_to_series(self, points: Iterable[dict]) -> pd.Series:
