@@ -1,21 +1,32 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import nubraLogo from './assets/nubra-logo.png'
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import nubraLogo from './assets/nubra.png'
+import AutomatePanel from './components/AutomatePanel'
+import IndicatorBuilder from './components/IndicatorBuilder'
+import PostLoginFooter from './components/PostLoginFooter'
 import ScalperLiveChart from './components/ScalperLiveChart'
+import StrategyBuilder from './components/StrategyBuilder'
+import VolumeDashboard from './components/VolumeDashboard'
+import { DATA_ENVIRONMENT } from './constants/environment'
+import { useAutomation } from './hooks/useAutomation'
+import type { AutomateConfig } from './hooks/useAutomation'
+import { useIndicators } from './hooks/useIndicators'
 import { useScalperLive } from './hooks/useScalperLive'
+import type { OhlcvCandle } from './types/indicators'
 
 type Environment = 'PROD' | 'UAT'
-type Step = 'start' | 'otp' | 'mpin' | 'success'
-type View = 'login' | 'dashboard' | 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'
+type AuthMethod = 'otp' | 'totp'
+type Step = 'start' | 'otp' | 'totp' | 'mpin' | 'success'
+type SignedOutView = 'landing' | 'login'
+type View = SignedOutView | 'dashboard' | 'no-code' | 'backtest-lab' | 'volume-breakout' | 'tradingview-webhook' | 'scalper' | 'execution-auth'
 type TradingViewMode = 'strategy' | 'line'
 type TradingViewAction = 'BUY' | 'SELL'
 type Interval = '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h'
-type Indicator = 'EMA' | 'MA' | 'RSI'
 type OrderDeliveryType = 'ORDER_DELIVERY_TYPE_CNC' | 'ORDER_DELIVERY_TYPE_IDAY'
-type StrategySideMode = 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY'
+type ScalperTool = 'delta-neutral' | 'volume-breakout' | 'indicator-builder' | 'automate'
 
 interface StartResponse {
   flow_id: string
-  next_step: 'otp'
+  next_step: 'otp' | 'totp'
   masked_phone: string
   environment: Environment
   device_id: string
@@ -23,6 +34,12 @@ interface StartResponse {
 }
 
 interface OtpResponse {
+  flow_id: string
+  next_step: 'mpin'
+  message: string
+}
+
+interface TotpResponse {
   flow_id: string
   next_step: 'mpin'
   message: string
@@ -41,10 +58,23 @@ interface SuccessResponse {
   is_demo?: boolean
 }
 
+interface ExecutionAuthRequest {
+  environment: Environment
+  returnView: Extract<View, 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'>
+  moduleLabel: string
+  returnContext?: ExecutionAuthReturnContext
+}
+
+interface ExecutionAuthReturnContext {
+  scannerSymbol?: string
+  focusScannerTicket?: boolean
+}
+
 interface SessionStatusResponse {
   active: boolean
   environment: Environment
   expires_at_utc: string | null
+  account_id: string | null
   message: string
 }
 
@@ -52,90 +82,6 @@ interface ApiErrorPayload {
   detail?: unknown
   message?: unknown
   error?: unknown
-}
-
-interface NoCodeAlert {
-  id: string
-  signal: string
-  instrument: string
-  interval: Interval
-  indicator: Indicator
-  candle_time_ist: string
-  triggered_at_ist: string
-  price: number
-  detail: string
-}
-
-interface NoCodeDebugSnapshot {
-  last_completed_candle_ist: string | null
-  last_close: number | null
-  indicator_values: Record<string, string | number | null>
-  dataframe_rows: Array<Record<string, string | number | null>>
-}
-
-interface NoCodeStatus {
-  running: boolean
-  instrument: string | null
-  interval: Interval | null
-  indicator: Indicator | null
-  strategy_side_mode: StrategySideMode | null
-  last_run_ist: string | null
-  next_run_ist: string | null
-  market_status: string
-  last_signal: string | null
-  last_error: string | null
-  alerts: NoCodeAlert[]
-  tracker_rows: Array<{
-    alert: string
-    side: string
-    position_state: string
-    time_ist: string
-  }>
-  debug: NoCodeDebugSnapshot | null
-  execution: {
-    enabled: boolean
-    instrument_ref_id: number | null
-    instrument_tick_size: number | null
-    instrument_lot_size: number | null
-    desired_side: string | null
-    position_side: string | null
-    position_qty: number
-    pending_order_id: number | null
-    pending_order_side: string | null
-    pending_order_action: string | null
-    pending_followup_signal: string | null
-    last_order_status: string | null
-    last_execution_status: string | null
-    last_order_update: Record<string, unknown> | null
-    last_positions_sync_ist: string | null
-  } | null
-}
-
-interface NoCodeInstrumentMeta {
-  instrument: string
-  ref_id: number
-  tick_size: number
-  lot_size: number
-}
-
-interface StockSearchItem {
-  instrument: string
-  display_name: string
-  exchange: string
-  ref_id: number
-  tick_size: number
-  lot_size: number
-}
-
-interface NoCodeStartResponse {
-  status: string
-  message: string
-  job: NoCodeStatus
-}
-
-interface NoCodeStopResponse {
-  status: string
-  message: string
 }
 
 interface PublicIpResponse {
@@ -261,7 +207,10 @@ interface ScalperResolvedOptionPair {
   underlying: string
   exchange: string
   expiry: string | null
-  strike_price: number
+  ce_strike_price: number
+  pe_strike_price: number
+  call_ref_id: number | null
+  put_ref_id: number | null
   call_display_name: string
   put_display_name: string
   lot_size: number | null
@@ -275,6 +224,67 @@ interface ScalperSnapshotResponse {
   call_option: ScalperChartPanel
   put_option: ScalperChartPanel
   option_pair: ScalperResolvedOptionPair
+}
+
+interface ScalperOrderResponse {
+  status: 'success'
+  message: string
+  order_id: number | null
+  order_status: string | null
+  order_side: 'ORDER_SIDE_BUY' | 'ORDER_SIDE_SELL'
+  order_qty: number
+  order_price: number | null
+  lots: number
+  instrument_display_name: string
+}
+
+interface DeltaNeutralPairRow {
+  rank: number
+  underlying: string
+  exchange: string
+  expiry: string | null
+  ce_strike_price: number
+  pe_strike_price: number
+  call_display_name: string
+  put_display_name: string
+  spot_price: number | null
+  center_strike: number
+  width_points: number
+  call_delta: number | null
+  put_delta: number | null
+  net_delta: number | null
+  neutrality_score: number
+  lot_size: number | null
+  tick_size: number | null
+}
+
+interface DeltaNeutralPairsResponse {
+  status: 'success'
+  message: string
+  pairs: DeltaNeutralPairRow[]
+}
+
+interface ScalperVolumeBreakoutRow {
+  rank: number
+  underlying: string
+  display_name: string
+  exchange: string
+  last_price: number | null
+  current_volume: number | null
+  average_volume: number | null
+  volume_ratio: number
+  price_change_pct: number | null
+  breakout_strength: number
+  status_label: string
+  nearest_expiry: string | null
+  atm_strike: number | null
+}
+
+interface ScalperVolumeBreakoutResponse {
+  status: 'success'
+  message: string
+  lookback_days: number
+  rows: ScalperVolumeBreakoutRow[]
 }
 
 interface TradingViewWebhookStatusResponse {
@@ -322,42 +332,61 @@ interface VolumeBreakoutStockRow {
   symbol: string
   display_name: string
   exchange: string
+  sector?: string | null
+  industry?: string | null
   candle_time_ist: string
   last_price: number
   current_volume: number
   average_volume: number
   volume_ratio: number
   price_change_pct: number | null
+  day_change_pct: number | null
   price_breakout_pct: number | null
   is_green: boolean
   is_price_breakout: boolean
   meets_breakout: boolean
+  baseline_days: number
+}
+
+interface VolumeBreakoutSyncStatus {
+  db_enabled: boolean
+  cache_mode: string
+  universe_ready: boolean
+  symbols_synced: number
+  symbols_missing_history: number
+  history_range_ist: string | null
+  last_history_sync_ist: string | null
+  next_refresh_ist: string | null
 }
 
 interface VolumeBreakoutStatus {
   running: boolean
   universe_slug: string
+  universe_mode: string
+  universe_label: string
   interval: Interval
   lookback_days: number
   refresh_seconds: number
   min_volume_ratio: number
   universe_size: number
-  live_mode: boolean
-  live_status: string
-  live_last_event_ist: string | null
-  live_subscribed_symbols: number
+  sync: VolumeBreakoutSyncStatus
   last_run_ist: string | null
   next_run_ist: string | null
   last_error: string | null
   summary: {
     tracked_stocks: number
     active_breakouts: number
+    fresh_breakouts: number
     leaders_with_price_breakout: number
     latest_candle_ist: string | null
     market_status: string
   }
   market_breakouts: VolumeBreakoutStockRow[]
   recent_breakouts: VolumeBreakoutStockRow[]
+  confirmed_breakouts: VolumeBreakoutStockRow[]
+  movers_up: VolumeBreakoutStockRow[]
+  movers_down: VolumeBreakoutStockRow[]
+  is_cached_snapshot: boolean
 }
 
 interface VolumeBreakoutStartResponse {
@@ -368,63 +397,9 @@ interface VolumeBreakoutStartResponse {
 
 const API_BASE_URL = ''
 const SESSION_STORAGE_KEY = 'nubraoss.session'
-const dashboardTabs = ['Dashboard']
-
-const dashboardCards = [
-  {
-    badge: 'NC',
-    badgeClass: 'badge-indigo',
-    title: 'No Code Algo',
-    description: 'Visual strategy builder for creating and launching rule-based trading flows.',
-    footer: 'Open No Code Algo',
-    key: 'no-code' as const,
-  },
-  {
-    badge: 'VB',
-    badgeClass: 'badge-blue',
-    title: 'Volume Breakout',
-    description: 'Scan sector leaders and market-wide volume breakouts across major Indian stocks.',
-    footer: 'Open Scanner',
-    key: 'volume-breakout' as const,
-  },
-  {
-    badge: 'WS',
-    badgeClass: 'badge-emerald',
-    title: 'Webhook Strategies',
-    description: 'Manage alert-driven trading strategies and view active automation status.',
-    footer: 'Open Strategies',
-    key: 'tradingview-webhook' as const,
-  },
-  {
-    badge: 'SC',
-    badgeClass: 'badge-orange',
-    title: 'Scalper',
-    description: 'Dedicated intraday workspace for fast entries, quick decisions, and short-horizon execution flows.',
-    footer: 'Open Scalper',
-    key: 'scalper' as const,
-  },
-  {
-    badge: 'TB',
-    badgeClass: 'badge-slate',
-    title: 'Trade Book',
-    description: 'Review executed trades, fills, and trade-side summaries across the session.',
-    footer: 'Open Trade Book',
-  },
-  {
-    badge: 'OC',
-    badgeClass: 'badge-orange',
-    title: 'Option Chain',
-    description: 'Monitor live option chain data, strike context, and quick action flows.',
-    footer: 'Open Option Chain',
-  },
-  {
-    badge: 'RT',
-    badgeClass: 'badge-cyan',
-    title: 'Risk & Tools',
-    description: 'Launch margin checks, analytics utilities, and internal risk helpers.',
-    footer: 'Open Tools',
-  },
-]
+const EXECUTION_SESSIONS_STORAGE_KEY = 'nubraoss.execution-sessions'
+const SCALPER_SNAPSHOT_CACHE_PREFIX = 'nubraoss.scalperSnapshot'
+const AUTH_DEFAULT_MESSAGE = 'Choose SMS OTP or TOTP, complete verification, then confirm MPIN.'
 
 const demoSession: SuccessResponse = {
   access_token: 'demo-access-token',
@@ -432,7 +407,7 @@ const demoSession: SuccessResponse = {
   user_name: 'Demo User',
   account_id: 'NUBRA-DEMO',
   device_id: 'Nubra-OSS-DEMO',
-  environment: 'UAT',
+  environment: DATA_ENVIRONMENT,
   broker: 'Nubra',
   expires_in: 3600,
   message: 'Demo mode enabled. Explore the current UI without using a real Nubra login.',
@@ -441,6 +416,67 @@ const demoSession: SuccessResponse = {
 
 const intervals: Interval[] = ['1m', '2m', '3m', '5m', '15m', '30m', '1h']
 const scalperUnderlyings = ['NIFTY', 'BANKNIFTY'] as const
+
+function scalperStrikeStep(underlying: string): number {
+  const normalized = underlying.trim().toUpperCase()
+  if (normalized === 'BANKNIFTY') return 100
+  if (normalized === 'NIFTY') return 50
+  return 10
+}
+
+function snapScalperStrike(price: number, underlying: string): string {
+  const step = scalperStrikeStep(underlying)
+  return String(Math.round(price / step) * step)
+}
+
+function defaultScalperStrike(underlying: string): string {
+  const normalized = underlying.trim().toUpperCase()
+  if (normalized === 'BANKNIFTY') return snapScalperStrike(56500, normalized)
+  if (normalized === 'NIFTY') return snapScalperStrike(24300, normalized)
+  return snapScalperStrike(1000, normalized)
+}
+
+function adjustScalperStrike(value: string, underlying: string, direction: -1 | 1): string {
+  const step = scalperStrikeStep(underlying)
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultScalperStrike(underlying)
+  }
+  return String(Math.max(step, parsed + step * direction))
+}
+
+function scalperSnapshotCacheKeys(input: {
+  underlying: string
+  interval: string
+  ceStrike: string
+  peStrike: string
+  expiry: string
+}): { exact: string; generic: string } {
+  const exact = `${SCALPER_SNAPSHOT_CACHE_PREFIX}:${input.underlying}:${input.interval}:${input.ceStrike}:${input.peStrike}:${input.expiry || 'nearest'}`
+  const generic = `${SCALPER_SNAPSHOT_CACHE_PREFIX}:${input.underlying}:${input.interval}:latest`
+  return { exact, generic }
+}
+
+function loadCachedScalperSnapshot(keys: { exact: string; generic: string }): ScalperSnapshotResponse | null {
+  if (typeof window === 'undefined') return null
+  for (const key of [keys.exact, keys.generic]) {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) continue
+    try {
+      return JSON.parse(raw) as ScalperSnapshotResponse
+    } catch {
+      window.localStorage.removeItem(key)
+    }
+  }
+  return null
+}
+
+function saveCachedScalperSnapshot(keys: { exact: string; generic: string }, snapshot: ScalperSnapshotResponse): void {
+  if (typeof window === 'undefined') return
+  const payload = JSON.stringify(snapshot)
+  window.localStorage.setItem(keys.exact, payload)
+  window.localStorage.setItem(keys.generic, payload)
+}
 
 function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '--'
@@ -455,92 +491,87 @@ function formatCompactVolume(value: number | null | undefined): string {
   return value.toFixed(0)
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
+function normalizeExpiryValue(value: string | null | undefined): string | null {
+  const cleaned = value?.trim().toUpperCase() ?? ''
+  if (!cleaned) return null
+
+  const directFormats = ['%d %b %y', '%d %B %y', '%Y%m%d', '%d-%m-%Y', '%d-%b-%Y', '%d%b%y', '%d%b%Y', '%d%B%y', '%d%B%Y']
+  for (const format of directFormats) {
+    const parsed = tryParseExpiry(cleaned, format)
+    if (parsed) return parsed
+  }
+
+  const digits = cleaned.replace(/\D/g, '')
+  if (digits.length === 8) return digits
+  return cleaned
 }
 
-function ScalperChart({ title, panel, accent }: { title: string; panel: ScalperChartPanel | null; accent: 'blue' | 'green' | 'red' }) {
-  const candles = panel?.candles ?? []
-  const latest = candles[candles.length - 1] ?? null
-  const previous = candles[candles.length - 2] ?? null
-  const allPrices = candles.flatMap((candle) => [candle.high, candle.low])
-  const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0
-  const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 1
-  const priceRange = Math.max(maxPrice - minPrice, 1)
-  const visibleCandles = candles.slice(-72)
-  const chartHeight = 248
-  const volumeHeight = 48
-  const width = 100
-  const accentClass =
-    accent === 'green' ? 'scalper-chart-card accent-green' : accent === 'red' ? 'scalper-chart-card accent-red' : 'scalper-chart-card accent-blue'
+function tryParseExpiry(value: string, format: string): string | null {
+  const monthMap: Record<string, string> = {
+    JAN: '01',
+    FEB: '02',
+    MAR: '03',
+    APR: '04',
+    MAY: '05',
+    JUN: '06',
+    JUL: '07',
+    AUG: '08',
+    SEP: '09',
+    OCT: '10',
+    NOV: '11',
+    DEC: '12',
+  }
 
-  return (
-    <article className={accentClass}>
-      <div className="scalper-chart-head">
-        <div>
-          <span className="summary-label">{title}</span>
-          <h3>{panel?.display_name ?? 'Waiting for data'}</h3>
-        </div>
-        <div className="scalper-chart-price">
-          <strong>{formatPrice(panel?.last_price)}</strong>
-          <small>{panel ? `${panel.exchange} • ${panel.interval}` : 'Historical snapshot'}</small>
-        </div>
-      </div>
+  const normalized = value.toUpperCase()
+  const compact = normalized.replace(/[\s-]/g, '')
 
-      {latest ? (
-        <div className="scalper-ohlc-row">
-          <span>O {formatPrice(latest.open)}</span>
-          <span>H {formatPrice(latest.high)}</span>
-          <span>L {formatPrice(latest.low)}</span>
-          <span>C {formatPrice(latest.close)}</span>
-          <span className={latest.close >= latest.open ? 'tone-positive' : 'tone-negative'}>
-            {previous ? `${latest.close >= previous.close ? '+' : ''}${(latest.close - previous.close).toFixed(2)}` : '--'}
-          </span>
-          <span>Vol {formatCompactVolume(latest.volume)}</span>
-        </div>
-      ) : null}
+  if (format === '%Y%m%d' && /^\d{8}$/.test(compact)) return compact
 
-      <div className="scalper-chart-canvas">
-        {visibleCandles.length === 0 ? (
-          <div className="table-empty">No candles returned yet.</div>
-        ) : (
-          <svg viewBox={`0 0 ${width} ${chartHeight + volumeHeight}`} className="scalper-svg" preserveAspectRatio="none" aria-label={`${title} candle chart`}>
-            {Array.from({ length: 5 }).map((_, index) => {
-              const y = (chartHeight / 4) * index
-              return <line key={`grid-${index}`} x1="0" y1={y} x2={width} y2={y} className="scalper-grid-line" />
-            })}
-            {visibleCandles.map((candle, index) => {
-              const step = width / Math.max(visibleCandles.length, 1)
-              const x = step * index + step / 2
-              const openY = clamp(((maxPrice - candle.open) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const closeY = clamp(((maxPrice - candle.close) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const highY = clamp(((maxPrice - candle.high) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const lowY = clamp(((maxPrice - candle.low) / priceRange) * (chartHeight - 12) + 6, 0, chartHeight)
-              const bodyY = Math.min(openY, closeY)
-              const bodyHeight = Math.max(Math.abs(closeY - openY), 1.2)
-              const isUp = candle.close >= candle.open
-              const fill = isUp ? '#14b8a6' : '#f43f5e'
-              const volumeBase = chartHeight + volumeHeight
-              const maxVolume = Math.max(...visibleCandles.map((item) => item.volume ?? 0), 1)
-              const volumeHeightValue = ((candle.volume ?? 0) / maxVolume) * (volumeHeight - 6)
-              return (
-                <g key={candle.epoch_ms}>
-                  <line x1={x} y1={highY} x2={x} y2={lowY} className="scalper-wick" stroke={fill} />
-                  <rect x={x - step * 0.28} y={bodyY} width={Math.max(step * 0.56, 0.8)} height={bodyHeight} rx="0.8" fill={fill} />
-                  <rect x={x - step * 0.28} y={volumeBase - volumeHeightValue} width={Math.max(step * 0.56, 0.8)} height={Math.max(volumeHeightValue, 1)} rx="0.8" fill={fill} opacity="0.35" />
-                </g>
-              )
-            })}
-          </svg>
-        )}
-      </div>
+  const alphaMatch = compact.match(/^(\d{2})([A-Z]{3,})(\d{2,4})$/)
+  if (alphaMatch && ['%d%b%y', '%d%b%Y', '%d%B%y', '%d%B%Y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = alphaMatch
+    const month = monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
 
-      <div className="scalper-chart-foot">
-        <span>Bars: {visibleCandles.length}</span>
-        <span>Last update: {latest?.time_ist ?? '--'}</span>
-      </div>
-    </article>
-  )
+  const spacedMatch = normalized.match(/^(\d{2})\s+([A-Z]{3,})\s+(\d{2,4})$/)
+  if (spacedMatch && ['%d %b %y', '%d %B %y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = spacedMatch
+    const month = monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
+
+  const dashMatch = normalized.match(/^(\d{2})-([A-Z]{3,}|\d{2})-(\d{2,4})$/)
+  if (dashMatch && ['%d-%m-%Y', '%d-%b-%Y'].includes(format)) {
+    const [, day, rawMonth, rawYear] = dashMatch
+    const month = /^\d{2}$/.test(rawMonth) ? rawMonth : monthMap[rawMonth.slice(0, 3)]
+    if (!month) return null
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+    return `${year}${month}${day}`
+  }
+
+  return null
+}
+
+function formatExpiryInputValue(value: string | null | undefined): string {
+  const normalized = normalizeExpiryValue(value)
+  if (!normalized) return ''
+  if (/^\d{8}$/.test(normalized)) {
+    const year = normalized.slice(2, 4)
+    const monthIndex = Number(normalized.slice(4, 6)) - 1
+    const day = normalized.slice(6, 8)
+    const month = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'][monthIndex]
+    return `${day} ${month} ${year}`
+  }
+  return normalized
+}
+
+function formatExpiryBadge(value: string | null | undefined): string {
+  return formatExpiryInputValue(value) || 'Nearest expiry'
 }
 
 function loadStoredSession(): SuccessResponse | null {
@@ -548,10 +579,34 @@ function loadStoredSession(): SuccessResponse | null {
   const raw = window.localStorage.getItem(SESSION_STORAGE_KEY)
   if (!raw) return null
   try {
-    return JSON.parse(raw) as SuccessResponse
+    const session = JSON.parse(raw) as SuccessResponse
+    if (!session.is_demo && session.environment !== DATA_ENVIRONMENT) {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY)
+      return null
+    }
+    return session
   } catch {
     window.localStorage.removeItem(SESSION_STORAGE_KEY)
     return null
+  }
+}
+
+function loadStoredExecutionSessions(): Partial<Record<Environment, SuccessResponse>> {
+  if (typeof window === 'undefined') return {}
+  const raw = window.localStorage.getItem(EXECUTION_SESSIONS_STORAGE_KEY)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Partial<Record<Environment, SuccessResponse>>
+    const next: Partial<Record<Environment, SuccessResponse>> = {}
+    for (const env of ['PROD', 'UAT'] as const) {
+      const candidate = parsed[env]
+      if (!candidate || candidate.is_demo) continue
+      next[env] = candidate
+    }
+    return next
+  } catch {
+    window.localStorage.removeItem(EXECUTION_SESSIONS_STORAGE_KEY)
+    return {}
   }
 }
 
@@ -613,55 +668,41 @@ function extractErrorMessage(payload: ApiErrorPayload | null | undefined, fallba
   return fallback
 }
 
-function getSignalTone(signal: string | null): string {
-  if (!signal) return 'neutral'
-  if (signal.includes('BULLISH') || signal.includes('OVERSOLD')) return 'success'
-  if (signal.includes('BEARISH') || signal.includes('OVERBOUGHT')) return 'danger'
-  return 'neutral'
+function formatCompactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
+  if (value >= 1_00_000) return `${(value / 1_00_000).toFixed(2)}L`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toFixed(0)
 }
 
-function formatStrategySideMode(mode: StrategySideMode | null | undefined): string {
-  if (mode === 'LONG_ONLY') return 'Long Only'
-  if (mode === 'SHORT_ONLY') return 'Short Only'
-  if (mode === 'BOTH') return 'Both'
-  return '—'
-}
 
 export default function App() {
-  const [view, setView] = useState<View>(() => (loadStoredSession() ? 'dashboard' : 'login'))
+  const [view, setView] = useState<View>(() => (loadStoredSession() ? 'dashboard' : 'landing'))
   const [step, setStep] = useState<Step>(() => (loadStoredSession() ? 'success' : 'start'))
-  const [environment, setEnvironment] = useState<Environment>(() => loadStoredSession()?.environment ?? 'PROD')
+  const environment: Environment = DATA_ENVIRONMENT
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('otp')
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
   const [mpin, setMpin] = useState('')
   const [flowId, setFlowId] = useState('')
   const [maskedPhone, setMaskedPhone] = useState('')
-  const [message, setMessage] = useState('Enter your phone number, verify the OTP, then confirm MPIN.')
+  const [message, setMessage] = useState(AUTH_DEFAULT_MESSAGE)
   const [error, setError] = useState('')
-  const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'mpin' | 'no-code' | 'stop' | null>(null)
+  const [activeAction, setActiveAction] = useState<'phone' | 'otp' | 'totp' | 'mpin' | null>(null)
   const [session, setSession] = useState<SuccessResponse | null>(() => loadStoredSession())
+  const [executionSessions, setExecutionSessions] = useState<Partial<Record<Environment, SuccessResponse>>>(() => loadStoredExecutionSessions())
+  const [noCodeExecutionEnvironment, setNoCodeExecutionEnvironment] = useState<Environment>('PROD')
+  const [scannerExecutionEnvironment, setScannerExecutionEnvironment] = useState<Environment>('PROD')
+  const [webhookExecutionEnvironment, setWebhookExecutionEnvironment] = useState<Environment>('PROD')
+  const [scalperExecutionEnvironment, setScalperExecutionEnvironment] = useState<Environment>('PROD')
+  const [pendingExecutionAuth, setPendingExecutionAuth] = useState<ExecutionAuthRequest | null>(null)
+  const [scannerAuthReturnContext, setScannerAuthReturnContext] = useState<ExecutionAuthReturnContext | null>(null)
+  const [postAuthScrollTop, setPostAuthScrollTop] = useState<number | null>(null)
   const [isSessionChecking, setIsSessionChecking] = useState<boolean>(() => Boolean(loadStoredSession()))
   const [publicIp, setPublicIp] = useState<string>('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
 
-  const [instrument, setInstrument] = useState('')
-  const [interval, setIntervalValue] = useState<Interval>('3m')
-  const [indicator, setIndicator] = useState<Indicator>('EMA')
-  const [emaFast, setEmaFast] = useState('9')
-  const [emaSlow, setEmaSlow] = useState('21')
-  const [maFast, setMaFast] = useState('10')
-  const [maSlow, setMaSlow] = useState('20')
-  const [rsiLength, setRsiLength] = useState('14')
-  const [rsiUpper, setRsiUpper] = useState('70')
-  const [rsiLower, setRsiLower] = useState('30')
-  const [orderQty, setOrderQty] = useState('1')
-  const [orderDeliveryType, setOrderDeliveryType] = useState<OrderDeliveryType>('ORDER_DELIVERY_TYPE_IDAY')
-  const [strategySideMode, setStrategySideMode] = useState<StrategySideMode>('BOTH')
-  const [noCodeStatus, setNoCodeStatus] = useState<NoCodeStatus | null>(null)
-  const [instrumentMeta, setInstrumentMeta] = useState<NoCodeInstrumentMeta | null>(null)
-  const [stockSuggestions, setStockSuggestions] = useState<StockSearchItem[]>([])
-  const [noCodeMessage, setNoCodeMessage] = useState('Configure one instrument and start the IST scheduler.')
-  const [noCodeError, setNoCodeError] = useState('')
   const [volumeBreakoutStatus, setVolumeBreakoutStatus] = useState<VolumeBreakoutStatus | null>(null)
   const [volumeBreakoutMessage, setVolumeBreakoutMessage] = useState(
     'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
@@ -685,78 +726,519 @@ export default function App() {
   const [tradingViewOrderAction, setTradingViewOrderAction] = useState<TradingViewAction>('BUY')
   const [tradingViewQuantity, setTradingViewQuantity] = useState('1')
   const [historySourceFilter, setHistorySourceFilter] = useState<'all' | 'test' | 'live'>('all')
-  const [scalperUnderlying, setScalperUnderlying] = useState<(typeof scalperUnderlyings)[number]>('NIFTY')
+  const [scalperUnderlying, setScalperUnderlying] = useState<string>('NIFTY')
   const [scalperInterval, setScalperInterval] = useState<Interval>('1m')
-  const [scalperStrikePrice, setScalperStrikePrice] = useState('24300')
+  const [scalperCeStrikePrice, setScalperCeStrikePrice] = useState('24300')
+  const [scalperPeStrikePrice, setScalperPeStrikePrice] = useState('24300')
   const [scalperExpiry, setScalperExpiry] = useState('')
+  const pendingScalperAtmSync = useRef<string | null>('NIFTY')
+  const pendingScalperExpiry = useRef<string | null>(null)
   const [scalperReconnectNonce, setScalperReconnectNonce] = useState(0)
   const [scalperValidating, setScalperValidating] = useState(false)
-  const previousAlertCount = useRef(0)
-
-  const phoneComplete = flowId.length > 0
-  const otpComplete = step === 'mpin' || step === 'success'
-  const mpinComplete = step === 'success'
+  const [scalperSnapshot, setScalperSnapshot] = useState<ScalperSnapshotResponse | null>(null)
+  const [scalperSnapshotError, setScalperSnapshotError] = useState('')
+  const [scalperSnapshotNotice, setScalperSnapshotNotice] = useState('')
+  const [activeScalperTool, setActiveScalperTool] = useState<ScalperTool>('delta-neutral')
+  const [deltaNeutralPairs, setDeltaNeutralPairs] = useState<DeltaNeutralPairRow[]>([])
+  const [deltaNeutralMessage, setDeltaNeutralMessage] = useState('')
+  const [deltaNeutralLoading, setDeltaNeutralLoading] = useState(false)
+  const [scalperVolumeBreakoutRows, setScalperVolumeBreakoutRows] = useState<ScalperVolumeBreakoutRow[]>([])
+  const [scalperVolumeBreakoutMessage, setScalperVolumeBreakoutMessage] = useState('')
+  const [scalperVolumeBreakoutLoading, setScalperVolumeBreakoutLoading] = useState(false)
+  const [scalperVolumeBreakoutLookbackDays, setScalperVolumeBreakoutLookbackDays] = useState<3 | 5 | 10 | 20>(5)
+  const [scalperCallLots, setScalperCallLots] = useState('1')
+  const [scalperPutLots, setScalperPutLots] = useState('1')
+  const [scalperTradeError, setScalperTradeError] = useState('')
+  const [scalperTradeMessage, setScalperTradeMessage] = useState('')
+  const [scalperTradeAction, setScalperTradeAction] = useState<'buy-ce' | 'sell-ce' | 'buy-pe' | 'sell-pe' | null>(null)
+  const [automateEnabled, setAutomateEnabled] = useState(false)
+  const [automateConfig, setAutomateConfig] = useState<AutomateConfig>({
+    panel: 'call_option',
+    direction: 'both',
+    lots: '1',
+    maxTrades: '10',
+  })
   const derivedDeviceId = session?.device_id ?? (phone ? `Nubra-OSS-${phone}` : 'Nubra-OSS-<phone>')
 
-  // ── Live scalper hook ─────────────────────────────────────────────────────
-  const parsedScalperStrike = Number(scalperStrikePrice)
+  const [theme, setTheme] = useState<'dark'|'light'>('dark')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (postAuthScrollTop === null || view === 'execution-auth') return
+    window.requestAnimationFrame(() => {
+      const scrollContainer = document.querySelector('.subview-main')
+      if (scrollContainer) {
+        scrollContainer.scrollTop = postAuthScrollTop
+      } else {
+        window.scrollTo({ top: postAuthScrollTop, behavior: 'auto' })
+      }
+      setPostAuthScrollTop(null)
+    })
+  }, [postAuthScrollTop, view])
+
+  function toggleTheme() { setTheme((t) => t === 'dark' ? 'light' : 'dark') }
+
+  function resetAuthFields(nextMessage = AUTH_DEFAULT_MESSAGE) {
+    setStep('start')
+    setAuthMethod('otp')
+    setPhone('')
+    setOtp('')
+    setMpin('')
+    setFlowId('')
+    setMaskedPhone('')
+    setOtpDigits(['', '', '', '', '', ''])
+    setMpinDigits(['', '', '', ''])
+    setError('')
+    setActiveAction(null)
+    setMessage(nextMessage)
+  }
+
+  function resetAuthFlow(nextView: SignedOutView) {
+    setPendingExecutionAuth(null)
+    setView(nextView)
+    resetAuthFields()
+  }
+
+  function clearExecutionSession(environmentToClear: Environment) {
+    setExecutionSessions((current) => {
+      if (!current[environmentToClear]) return current
+      const next = { ...current }
+      delete next[environmentToClear]
+      return next
+    })
+  }
+
+  function getExecutionSession(environmentToUse: Environment): SuccessResponse | null {
+    if (environmentToUse === 'PROD') return session
+    return executionSessions[environmentToUse] ?? null
+  }
+
+  function beginExecutionAuth(
+    environmentToUse: Environment,
+    returnView: Extract<View, 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'>,
+    moduleLabel: string,
+    returnContext?: ExecutionAuthReturnContext,
+  ) {
+    const currentScrollTop = document.querySelector('.subview-main')?.scrollTop ?? window.scrollY ?? 0
+    setPendingExecutionAuth({
+      environment: environmentToUse,
+      returnView,
+      moduleLabel,
+      returnContext,
+    })
+    setPostAuthScrollTop(currentScrollTop)
+    setView('execution-auth')
+    resetAuthFields(`Authenticate your ${environmentToUse} execution session for ${moduleLabel}.`)
+  }
+
+  function handleNoCodeExecutionEnvironmentSelect(environmentToUse: Environment) {
+    if (environmentToUse === 'PROD') {
+      setNoCodeExecutionEnvironment('PROD')
+      return
+    }
+    const candidate = executionSessions[environmentToUse]
+    if (!candidate || hasSessionExpired(candidate)) {
+      if (candidate && hasSessionExpired(candidate)) {
+        clearExecutionSession(environmentToUse)
+      }
+      beginExecutionAuth(environmentToUse, 'no-code', 'No Code')
+      return
+    }
+    setNoCodeExecutionEnvironment(environmentToUse)
+  }
+
+  function handleScannerExecutionEnvironmentSelect(environmentToUse: Environment, returnContext?: ExecutionAuthReturnContext) {
+    if (environmentToUse === 'PROD') {
+      setScannerExecutionEnvironment('PROD')
+      return
+    }
+    const candidate = executionSessions[environmentToUse]
+    if (!candidate || hasSessionExpired(candidate)) {
+      if (candidate && hasSessionExpired(candidate)) {
+        clearExecutionSession(environmentToUse)
+      }
+      beginExecutionAuth(environmentToUse, 'volume-breakout', 'Scanner', returnContext)
+      return
+    }
+    setScannerExecutionEnvironment(environmentToUse)
+    if (returnContext) setScannerAuthReturnContext(returnContext)
+  }
+
+  function handleWebhookExecutionEnvironmentSelect(environmentToUse: Environment) {
+    if (environmentToUse === 'PROD') {
+      setWebhookExecutionEnvironment('PROD')
+      return
+    }
+    const candidate = executionSessions[environmentToUse]
+    if (!candidate || hasSessionExpired(candidate)) {
+      if (candidate && hasSessionExpired(candidate)) {
+        clearExecutionSession(environmentToUse)
+      }
+      beginExecutionAuth(environmentToUse, 'tradingview-webhook', 'Webhook')
+      return
+    }
+    setWebhookExecutionEnvironment(environmentToUse)
+  }
+
+  function handleScalperExecutionEnvironmentSelect(environmentToUse: Environment) {
+    if (environmentToUse === 'PROD') {
+      setScalperExecutionEnvironment('PROD')
+      return
+    }
+    const candidate = executionSessions[environmentToUse]
+    if (!candidate || hasSessionExpired(candidate)) {
+      if (candidate && hasSessionExpired(candidate)) {
+        clearExecutionSession(environmentToUse)
+      }
+      beginExecutionAuth(environmentToUse, 'scalper', 'Scalper')
+      return
+    }
+    setScalperExecutionEnvironment(environmentToUse)
+  }
+
+  function hasExecutionEnvironmentSession(environmentToUse: Environment): boolean {
+    const candidate = executionSessions[environmentToUse]
+    if (candidate && !candidate.is_demo && !hasSessionExpired(candidate)) {
+      return true
+    }
+    return Boolean(
+      session &&
+      !session.is_demo &&
+      session.environment === environmentToUse &&
+      !hasSessionExpired(session),
+    )
+  }
+
+  function renderExecutionEnvironmentToggle(
+    selectedEnvironment: Environment,
+    onSelect: (environmentToUse: Environment) => void,
+  ) {
+    return (
+      <div className="mode-toggle execution-env-toggle" aria-label="Execution environment">
+        {(['PROD', 'UAT'] as const).map((environmentToUse) => (
+          <button
+            key={environmentToUse}
+            type="button"
+            className={
+              selectedEnvironment === environmentToUse
+                ? 'indicator-box execution-env-button active'
+                : 'indicator-box execution-env-button'
+            }
+            onClick={() => onSelect(environmentToUse)}
+          >
+            <span
+              className={
+                hasExecutionEnvironmentSession(environmentToUse)
+                  ? 'execution-env-dot is-connected'
+                  : 'execution-env-dot is-disconnected'
+              }
+              aria-hidden="true"
+            />
+            {environmentToUse}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  function renderDashboardNav(pageLabel: string) {
+    const initials = (session?.user_name ?? 'N').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase()
+    return (
+      <header className="dash-top">
+        <div className="dash-top-l">
+          <div className="logo">
+            <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={32} height={32} />
+            <span className="wm" style={{ fontSize: 15 }}>NubraOSS</span>
+          </div>
+          <span className="topbar-sep" />
+          <nav className="topbar-nav" aria-label="Primary navigation">
+            {['Dashboard','Scanner','Webhook','Scalper'].map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className={tab === pageLabel ? 'nav-item active' : 'nav-item'}
+                onClick={() => {
+                  if (tab === 'Dashboard') setView('dashboard')
+                  else if (tab === 'Scanner') setView('volume-breakout')
+                  else if (tab === 'Webhook') setView('tradingview-webhook')
+                  else if (tab === 'Scalper') setView('scalper')
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="dash-top-r">
+          <div className="session-pill">
+            <span className="live-dot" />
+            {session?.environment === 'UAT' ? 'UAT' : 'MARKET OPEN'} / NSE
+          </div>
+          {pageLabel === 'Dashboard' && publicIp ? (
+            <div className="session-pill session-pill-ip" title={`Public IP ${publicIp}`}>
+              <span className="session-pill-label">IP</span>
+              <span className="session-pill-value">{publicIp}</span>
+            </div>
+          ) : null}
+          <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+            <span className={`tt-track ${theme}`}>
+              <span className="tt-thumb">
+                {theme === 'dark'
+                  ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/></svg>
+                  : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4}/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></svg>
+                }
+              </span>
+            </span>
+          </button>
+          <div className="profile-menu">
+            <button
+              type="button"
+              className="avatar profile-trigger"
+              onClick={() => setProfileMenuOpen((open) => !open)}
+              aria-expanded={profileMenuOpen}
+              aria-haspopup="menu"
+            >
+              {initials}
+            </button>
+            {profileMenuOpen ? (
+              <div className="profile-popover-v2" role="menu" aria-label="Profile menu">
+                <div>
+                  <strong style={{ fontSize: 14, fontWeight: 500 }}>{session?.user_name ?? 'Nubra User'}</strong>
+                  <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginTop: 2 }}>{session?.account_id ?? 'NUBRA'}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <span className="pill-v2">{session?.broker?.toLowerCase() ?? 'nubra'}</span>
+                  <span className="pill-v2 pill-accent">{session?.environment === 'UAT' ? 'UAT' : 'PROD'}</span>
+                </div>
+                {publicIp ? <div style={{ fontSize: 11, color: 'var(--fg-faint)' }}>IP: {publicIp}</div> : null}
+                <button
+                  type="button"
+                  className="ghost-inline"
+                  style={{ width: '100%', textAlign: 'center' }}
+                  onClick={() => { setProfileMenuOpen(false); resetSession() }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </header>
+    )
+  }
+
+  const parsedScalperCeStrike = Number(scalperCeStrikePrice)
+  const parsedScalperPeStrike = Number(scalperPeStrikePrice)
+  const normalizedScalperExpiry = normalizeExpiryValue(scalperExpiry)
+  const scalperExecutionSession = getExecutionSession(scalperExecutionEnvironment)
+  const webhookExecutionSession = getExecutionSession(webhookExecutionEnvironment)
   const scalperLive = useScalperLive({
     enabled:
       view === 'scalper' &&
       !!session &&
       !session.is_demo &&
       !scalperValidating &&
-      Number.isFinite(parsedScalperStrike) &&
-      parsedScalperStrike > 0,
+      Number.isFinite(parsedScalperCeStrike) &&
+      parsedScalperCeStrike > 0 &&
+      Number.isFinite(parsedScalperPeStrike) &&
+      parsedScalperPeStrike > 0,
     session_token: session?.access_token ?? '',
     device_id: derivedDeviceId,
-    environment: session?.environment ?? 'PROD',
+    environment: DATA_ENVIRONMENT,
     underlying: scalperUnderlying,
     exchange: 'NSE',
     interval: scalperInterval,
-    strike_price: parsedScalperStrike || 1,
-    expiry: scalperExpiry.trim() || null,
+    ce_strike_price: parsedScalperCeStrike || 1,
+    pe_strike_price: parsedScalperPeStrike || 1,
+    expiry: normalizedScalperExpiry,
     lookback_days: 5,
     reconnect_nonce: scalperReconnectNonce,
   })
+  const scalperPanelMeta = scalperLive.panelMeta
+  const scalperOptionPair = scalperLive.optionPair ?? scalperSnapshot?.option_pair ?? null
+  const indicatorHook = useIndicators()
+  const { liveVersion, liveCandlesRef } = scalperLive
+  const livePanelCandleCounts = useMemo(
+    () => ({
+      call_option: liveCandlesRef.current.call_option.length,
+      underlying: liveCandlesRef.current.underlying.length,
+      put_option: liveCandlesRef.current.put_option.length,
+    }),
+    [liveVersion, liveCandlesRef],
+  )
 
-  const helperText = useMemo(() => {
-    if (step === 'otp') return `OTP sent to ${maskedPhone || 'your number'}.`
-    if (step === 'mpin') return 'OTP verified. Confirm MPIN to enter the product.'
-    if (step === 'success') return 'Authentication complete.'
-    return 'Enter your phone number, verify the OTP, then confirm MPIN.'
-  }, [maskedPhone, step])
+  function liveToOhlcv(panel: 'underlying' | 'call_option' | 'put_option'): OhlcvCandle[] {
+    const candles = liveCandlesRef.current[panel]
+    const istOffsetSeconds = 19800
+    if (!candles.length) {
+      const snapshotCandles =
+        panel === 'call_option'
+          ? scalperSnapshot?.call_option.candles
+          : panel === 'put_option'
+            ? scalperSnapshot?.put_option.candles
+            : scalperSnapshot?.underlying.candles
+      if (!snapshotCandles) return []
+      return snapshotCandles.map((candle) => ({
+        time: Math.floor(candle.epoch_ms / 1000) + istOffsetSeconds,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume ?? 0,
+      }))
+    }
+    return candles.map((candle) => ({
+      time: candle.time + istOffsetSeconds,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+    }))
+  }
+
+  const indicatorOverlaysCall = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('call_option')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.call_option.candles],
+  )
+  const indicatorOverlaysUnderlying = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('underlying')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.underlying.candles],
+  )
+  const indicatorOverlaysPut = useMemo(
+    () => indicatorHook.computeAll(liveToOhlcv('put_option')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [indicatorHook.indicators, liveVersion, scalperSnapshot?.put_option.candles],
+  )
+
+  const automationSignals = useMemo(() => {
+    const panel = automateConfig.panel
+    const raw = liveCandlesRef.current[panel]
+    const istOffsetSeconds = 19800
+    let ohlcv: OhlcvCandle[]
+    if (raw.length > 0) {
+      const closed = raw.length > 1 ? raw.slice(0, -1) : raw
+      ohlcv = closed.map((candle) => ({
+        time: candle.time + istOffsetSeconds,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+      }))
+    } else {
+      const snapshotCandles =
+        panel === 'call_option'
+          ? scalperSnapshot?.call_option.candles
+          : panel === 'put_option'
+            ? scalperSnapshot?.put_option.candles
+            : scalperSnapshot?.underlying.candles
+      ohlcv = (snapshotCandles ?? []).map((candle) => ({
+        time: Math.floor(candle.epoch_ms / 1000) + istOffsetSeconds,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume ?? 0,
+      }))
+    }
+    return indicatorHook.computeAll(ohlcv).signals
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [automateConfig.panel, liveVersion, indicatorHook.indicators, scalperSnapshot])
+
+  const automationHasSignals = useMemo(
+    () =>
+      indicatorHook.indicators.some(
+        (indicator) =>
+          indicator.enabled &&
+          (indicator.signal.buyCondition !== null || indicator.signal.sellCondition !== null),
+      ),
+    [indicatorHook.indicators],
+  )
+
+  const automation = useAutomation({
+    enabled: automateEnabled,
+    config: automateConfig,
+    session: session
+      ? { session_token: session.access_token, device_id: session.device_id, environment: session.environment }
+      : null,
+    optionPair: scalperOptionPair
+      ? {
+          call_ref_id: scalperOptionPair.call_ref_id,
+          put_ref_id: scalperOptionPair.put_ref_id,
+          call_display_name: scalperOptionPair.call_display_name,
+          put_display_name: scalperOptionPair.put_display_name,
+          lot_size: scalperOptionPair.lot_size,
+          tick_size: scalperOptionPair.tick_size,
+          exchange: scalperOptionPair.exchange,
+        }
+      : null,
+    panelSignals: automationSignals,
+    callLtp: scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null,
+    putLtp: scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null,
+    underlyingLtp: scalperPanelMeta?.underlying?.last_price ?? scalperSnapshot?.underlying.last_price ?? null,
+    liveVersion,
+    apiBase: API_BASE_URL,
+  })
+
+  function sanitizePositiveInteger(value: string, fallback = 1): number {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+    return Math.max(1, Math.floor(parsed))
+  }
 
   function resetSession(reason?: string) {
     setSession(null)
-    setView('login')
-    setStep('start')
-    setFlowId('')
-    setOtp('')
-    setMpin('')
-    setMaskedPhone('')
-    setInstrument('')
-    setNoCodeStatus(null)
-    setInstrumentMeta(null)
-    setStockSuggestions([])
+    setExecutionSessions({})
+    setPendingExecutionAuth(null)
+    setNoCodeExecutionEnvironment('PROD')
+    setScannerExecutionEnvironment('PROD')
+    setWebhookExecutionEnvironment('PROD')
+    setScalperExecutionEnvironment('PROD')
+    resetAuthFlow('landing')
     setVolumeBreakoutStatus(null)
     setPublicIp('')
     setProfileMenuOpen(false)
     setIsSessionChecking(false)
-    setNoCodeError('')
     setVolumeBreakoutError('')
     setTradingViewStatus(null)
     setTradingViewError('')
     setTradingViewSecret('')
     setTradingViewMessage('Configure the webhook once, then paste the generated JSON into TradingView alerts.')
+    setScalperSnapshot(null)
+    setScalperSnapshotError('')
+    setScalperSnapshotNotice('')
+    setDeltaNeutralPairs([])
+    setDeltaNeutralMessage('')
+    setScalperVolumeBreakoutRows([])
+    setScalperVolumeBreakoutMessage('')
+    setScalperTradeError('')
+    setScalperTradeMessage('')
+    setScalperTradeAction(null)
+    setAutomateEnabled(false)
     setError(reason ?? '')
-    setMessage(reason ?? 'Enter your phone number, verify the OTP, then confirm MPIN.')
-    fetch(`${API_BASE_URL}/api/no-code/stop`, { method: 'POST' }).catch(() => undefined)
+    setMessage(reason ?? AUTH_DEFAULT_MESSAGE)
+    fetch(`${API_BASE_URL}/api/strategy/live/stop`, { method: 'POST' }).catch(() => undefined)
     fetch(`${API_BASE_URL}/api/volume-breakout/stop`, { method: 'POST' }).catch(() => undefined)
   }
 
+  function syncSessionAccountId(accountId: string | null | undefined) {
+    const nextAccountId = typeof accountId === 'string' ? accountId.trim() : ''
+    if (!nextAccountId) return
+    setSession((current) => {
+      if (!current || current.account_id === nextAccountId) return current
+      return { ...current, account_id: nextAccountId }
+    })
+  }
+
   async function validateScalperSessionAndReconnect() {
-    if (!session || session.is_demo) return
+    if (!session || session.is_demo || !scalperExecutionSession) return
 
     setScalperValidating(true)
     try {
@@ -764,9 +1246,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_token: session.access_token,
-          device_id: session.device_id,
-          environment: session.environment,
+          session_token: scalperExecutionSession.access_token,
+          device_id: scalperExecutionSession.device_id,
+          environment: scalperExecutionEnvironment,
         }),
       })
       const data = (await response.json()) as SessionStatusResponse | ApiErrorPayload
@@ -776,15 +1258,84 @@ export default function App() {
 
       const result = data as SessionStatusResponse
       if (!result.active) {
-        resetSession('Your Nubra session expired. Please log in again to restore the live scalper feed.')
+        if (scalperExecutionEnvironment === 'PROD') {
+          resetSession('Your Nubra session expired. Please log in again to restore the live scalper feed.')
+        } else {
+          clearExecutionSession(scalperExecutionEnvironment)
+          setScalperExecutionEnvironment('PROD')
+          setScalperTradeError('Your UAT execution session expired. Please authenticate again if you want to place UAT orders.')
+        }
         return
       }
 
+      syncSessionAccountId(result.account_id)
       setScalperReconnectNonce((value) => value + 1)
     } catch (err) {
-      resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
+      if (scalperExecutionEnvironment === 'PROD') {
+        resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
+      } else {
+        setScalperTradeError(err instanceof Error ? err.message : 'Unable to validate your UAT execution session.')
+      }
     } finally {
       setScalperValidating(false)
+    }
+  }
+
+  async function submitScalperOrder(optionLeg: 'CE' | 'PE', orderSide: 'ORDER_SIDE_BUY' | 'ORDER_SIDE_SELL') {
+    if (!session || session.is_demo || !scalperOptionPair || !scalperExecutionSession) return
+
+    const isCall = optionLeg === 'CE'
+    const lots = sanitizePositiveInteger(isCall ? scalperCallLots : scalperPutLots)
+    const instrumentRefId = isCall ? scalperOptionPair.call_ref_id : scalperOptionPair.put_ref_id
+    const instrumentDisplayName = isCall ? scalperOptionPair.call_display_name : scalperOptionPair.put_display_name
+    const ltpPrice = isCall
+      ? (scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null)
+      : (scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null)
+
+    if (!instrumentRefId) {
+      setScalperTradeError(`Unable to resolve ${optionLeg} contract metadata for order placement.`)
+      return
+    }
+
+    const actionKey =
+      orderSide === 'ORDER_SIDE_BUY'
+        ? (isCall ? 'buy-ce' : 'buy-pe')
+        : (isCall ? 'sell-ce' : 'sell-pe')
+    setScalperTradeAction(actionKey)
+    setScalperTradeError('')
+    setScalperTradeMessage('')
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/scalper/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: scalperExecutionSession.access_token,
+          device_id: scalperExecutionSession.device_id,
+          environment: scalperExecutionEnvironment,
+          instrument_ref_id: instrumentRefId,
+          instrument_display_name: instrumentDisplayName,
+          option_leg: optionLeg,
+          order_side: orderSide,
+          lots,
+          lot_size: scalperOptionPair.lot_size ?? 1,
+          tick_size: scalperOptionPair.tick_size ?? 1,
+          ltp_price: ltpPrice,
+          order_delivery_type: 'ORDER_DELIVERY_TYPE_IDAY',
+          exchange: scalperOptionPair.exchange,
+          tag: `nubraoss_scalper_${optionLeg.toLowerCase()}`,
+        }),
+      })
+      const data = (await response.json()) as ScalperOrderResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to place the scalper order.'))
+      }
+      const result = data as ScalperOrderResponse
+      setScalperTradeMessage(`${result.message} Order ${result.order_id ?? ''} ${result.order_status ?? ''}`.trim())
+    } catch (err) {
+      setScalperTradeError(err instanceof Error ? err.message : 'Unable to place the scalper order.')
+    } finally {
+      setScalperTradeAction(null)
     }
   }
 
@@ -796,6 +1347,33 @@ export default function App() {
     }
     window.localStorage.removeItem(SESSION_STORAGE_KEY)
   }, [session])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const next: Partial<Record<Environment, SuccessResponse>> = {}
+    for (const env of ['PROD', 'UAT'] as const) {
+      const candidate = executionSessions[env]
+      if (!candidate || hasSessionExpired(candidate) || candidate.is_demo) continue
+      next[env] = candidate
+    }
+    if (Object.keys(next).length > 0) {
+      window.localStorage.setItem(EXECUTION_SESSIONS_STORAGE_KEY, JSON.stringify(next))
+    } else {
+      window.localStorage.removeItem(EXECUTION_SESSIONS_STORAGE_KEY)
+    }
+    if (executionSessions.UAT && !next.UAT) {
+      if (noCodeExecutionEnvironment === 'UAT') setNoCodeExecutionEnvironment('PROD')
+      if (scannerExecutionEnvironment === 'UAT') setScannerExecutionEnvironment('PROD')
+      if (webhookExecutionEnvironment === 'UAT') setWebhookExecutionEnvironment('PROD')
+      if (scalperExecutionEnvironment === 'UAT') setScalperExecutionEnvironment('PROD')
+    }
+  }, [
+    executionSessions,
+    noCodeExecutionEnvironment,
+    scannerExecutionEnvironment,
+    webhookExecutionEnvironment,
+    scalperExecutionEnvironment,
+  ])
 
   useEffect(() => {
     if (!session) return
@@ -831,6 +1409,7 @@ export default function App() {
           resetSession('Your Nubra session is no longer active. Please log in again.')
           return
         }
+        syncSessionAccountId(result.account_id)
       } catch (err) {
         if (cancelled) return
         resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
@@ -1015,40 +1594,6 @@ export default function App() {
   }, [session])
 
   useEffect(() => {
-    if (view !== 'no-code') return
-
-    const fetchStatus = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/no-code/status`)
-        const data = (await response.json()) as NoCodeStatus | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to fetch No Code Algo status.'))
-        }
-        const status = data as NoCodeStatus
-        setNoCodeStatus(status)
-        if (status.last_error) {
-          setNoCodeError(status.last_error)
-        } else {
-          setNoCodeError('')
-        }
-        if (status.alerts.length > previousAlertCount.current) {
-          const latest = status.alerts[0]
-          const alertMessage = `Signal: ${latest.signal} on ${latest.instrument} at ${latest.triggered_at_ist}`
-          setNoCodeMessage(alertMessage)
-          window.alert(alertMessage)
-        }
-        previousAlertCount.current = status.alerts.length
-      } catch (err) {
-        setNoCodeError(err instanceof Error ? err.message : 'Unable to fetch No Code Algo status.')
-      }
-    }
-
-    fetchStatus()
-    const intervalId = window.setInterval(fetchStatus, 5000)
-    return () => window.clearInterval(intervalId)
-  }, [view])
-
-  useEffect(() => {
     if (view !== 'volume-breakout' || !session) return
 
     let cancelled = false
@@ -1119,107 +1664,262 @@ export default function App() {
   }, [view, session, derivedDeviceId])
 
   useEffect(() => {
-    const lotSize = noCodeStatus?.execution?.instrument_lot_size
-    if (!lotSize || lotSize <= 1) return
-    if (!orderQty || orderQty === '1') {
-      setOrderQty(String(lotSize))
+    const nextStrike = defaultScalperStrike(scalperUnderlying)
+    pendingScalperAtmSync.current = scalperUnderlying
+    setScalperCeStrikePrice(nextStrike)
+    setScalperPeStrikePrice(nextStrike)
+    if (pendingScalperExpiry.current !== null) {
+      setScalperExpiry(pendingScalperExpiry.current)
+      pendingScalperExpiry.current = null
+    } else {
+      setScalperExpiry('')
     }
-  }, [noCodeStatus?.execution?.instrument_lot_size, orderQty])
-
-  useEffect(() => {
-    if (view !== 'no-code' || !session || !instrument.trim()) {
-      setInstrumentMeta(null)
-      return
-    }
-
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/no-code/instrument-meta`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_token: session.access_token,
-            device_id: derivedDeviceId,
-            environment: session.environment,
-            instrument,
-          }),
-          signal: controller.signal,
-        })
-        const data = (await response.json()) as NoCodeInstrumentMeta | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to resolve instrument metadata.'))
-        }
-        const meta = data as NoCodeInstrumentMeta
-        setInstrumentMeta(meta)
-        if (!orderQty || orderQty === '1') {
-          setOrderQty(String(meta.lot_size))
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setInstrumentMeta(null)
-      }
-    }, 350)
-
-    return () => {
-      controller.abort()
-      window.clearTimeout(timeoutId)
-    }
-  }, [view, session, instrument, derivedDeviceId, orderQty])
-
-  useEffect(() => {
-    if (view !== 'no-code' || !session || instrument.trim().length < 1) {
-      setStockSuggestions([])
-      return
-    }
-
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/instruments/stocks/search`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_token: session.access_token,
-            device_id: derivedDeviceId,
-            environment: session.environment,
-            query: instrument,
-            limit: 8,
-          }),
-          signal: controller.signal,
-        })
-        const data = (await response.json()) as { items: StockSearchItem[] } | ApiErrorPayload
-        if (!response.ok) {
-          throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to search stocks.'))
-        }
-        setStockSuggestions((data as { items: StockSearchItem[] }).items)
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setStockSuggestions([])
-      }
-    }, 200)
-
-    return () => {
-      controller.abort()
-      window.clearTimeout(timeoutId)
-    }
-  }, [view, session, instrument, derivedDeviceId])
-
-  useEffect(() => {
-    setScalperStrikePrice(scalperUnderlying === 'BANKNIFTY' ? '56500' : '24300')
-    setScalperExpiry('')
   }, [scalperUnderlying])
+
+  useEffect(() => {
+    if (view !== 'scalper' || pendingScalperAtmSync.current !== scalperUnderlying) return
+    if (!scalperSnapshot || scalperSnapshot.underlying.last_price == null) return
+    const instrumentName = `${scalperSnapshot.underlying.instrument} ${scalperSnapshot.underlying.display_name}`.toUpperCase()
+    if (!instrumentName.includes(scalperUnderlying)) return
+    const atmStrike = snapScalperStrike(scalperSnapshot.underlying.last_price, scalperUnderlying)
+    setScalperCeStrikePrice(atmStrike)
+    setScalperPeStrikePrice(atmStrike)
+    pendingScalperAtmSync.current = null
+  }, [view, scalperSnapshot, scalperUnderlying])
+
+  useEffect(() => {
+    if (view !== 'scalper') return
+    const resolvedExpiry = formatExpiryInputValue(scalperOptionPair?.expiry)
+    if (!resolvedExpiry) return
+    if (resolvedExpiry !== formatExpiryInputValue(scalperExpiry)) {
+      setScalperExpiry(resolvedExpiry)
+    }
+  }, [view, scalperOptionPair?.expiry, scalperExpiry])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setScalperSnapshot(null)
+      setScalperSnapshotError('')
+      setScalperSnapshotNotice('')
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+    const cacheKeys = scalperSnapshotCacheKeys({
+      underlying: scalperUnderlying,
+      interval: scalperInterval,
+      ceStrike: scalperCeStrikePrice,
+      peStrike: scalperPeStrikePrice,
+      expiry: normalizedScalperExpiry ?? '',
+    })
+
+    // Show cached snapshot immediately for instant chart rendering
+    const cachedSnapshot = loadCachedScalperSnapshot(cacheKeys)
+    if (cachedSnapshot) {
+      setScalperSnapshot(cachedSnapshot)
+      setScalperSnapshotError('')
+      setScalperSnapshotNotice('')
+    }
+
+    async function loadScalperSnapshot() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/snapshot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: activeSession.access_token,
+          device_id: derivedDeviceId,
+          environment: DATA_ENVIRONMENT,
+          underlying: scalperUnderlying,
+          exchange: 'NSE',
+            interval: scalperInterval,
+            ce_strike_price: parsedScalperCeStrike || 1,
+            pe_strike_price: parsedScalperPeStrike || 1,
+            expiry: normalizedScalperExpiry,
+            lookback_days: 5,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as ScalperSnapshotResponse | ApiErrorPayload | null
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Unable to load scalper snapshot.'))
+        }
+        if (controller.signal.aborted) return
+        const snapshot = payload as ScalperSnapshotResponse
+        setScalperSnapshot(snapshot)
+        setScalperSnapshotError('')
+        setScalperSnapshotNotice('')
+        saveCachedScalperSnapshot(cacheKeys, snapshot)
+      } catch (err) {
+        if (controller.signal.aborted) return
+// If we already displayed cached data above, keep it with a subtle notice
+        if (cachedSnapshot) {
+          setScalperSnapshotNotice('Using cached data — live refresh failed.')
+          return
+        }
+        setScalperSnapshot(null)
+        setScalperSnapshotNotice('')
+        setScalperSnapshotError(err instanceof Error ? err.message : 'Unable to load scalper snapshot.')
+      }
+    }
+
+    void loadScalperSnapshot()
+
+    return () => controller.abort()
+  }, [
+    view,
+    session,
+    derivedDeviceId,
+    scalperUnderlying,
+    scalperInterval,
+    scalperCeStrikePrice,
+    scalperPeStrikePrice,
+    parsedScalperCeStrike,
+    parsedScalperPeStrike,
+    normalizedScalperExpiry,
+  ])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setDeltaNeutralPairs([])
+      setDeltaNeutralMessage('')
+      setDeltaNeutralLoading(false)
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+
+    async function loadDeltaNeutralPairs() {
+      setDeltaNeutralLoading(true)
+      setDeltaNeutralMessage('')
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/delta-neutral`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: activeSession.access_token,
+          device_id: derivedDeviceId,
+          environment: DATA_ENVIRONMENT,
+          underlying: scalperUnderlying,
+          exchange: 'NSE',
+            expiry: normalizedScalperExpiry,
+            limit: 5,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as DeltaNeutralPairsResponse | ApiErrorPayload | null
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Failed to load delta neutral pairs.'))
+        }
+
+        const pairs = ((payload as DeltaNeutralPairsResponse | null)?.pairs ?? []).slice(0, 5)
+        if (controller.signal.aborted) return
+
+        setDeltaNeutralPairs(pairs)
+        setDeltaNeutralMessage(
+          pairs.length > 0
+            ? 'Top CE / PE combinations ranked by real Nubra option delta balance for the selected underlying.'
+            : 'No pairs available right now. Adjust expiry or reload the live session.',
+        )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setDeltaNeutralPairs([])
+        setDeltaNeutralMessage(err instanceof Error ? err.message : 'Failed to load delta neutral pairs.')
+      } finally {
+        if (!controller.signal.aborted) {
+          setDeltaNeutralLoading(false)
+        }
+      }
+    }
+
+    void loadDeltaNeutralPairs()
+
+    return () => controller.abort()
+  }, [view, session, derivedDeviceId, scalperUnderlying, normalizedScalperExpiry])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !session || session.is_demo) {
+      setScalperVolumeBreakoutRows([])
+      setScalperVolumeBreakoutMessage('')
+      setScalperVolumeBreakoutLoading(false)
+      return
+    }
+
+    const activeSession = session
+    const controller = new AbortController()
+
+    async function loadScalperVolumeBreakout() {
+      setScalperVolumeBreakoutLoading(true)
+      setScalperVolumeBreakoutMessage('')
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/scalper/volume-breakout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: activeSession.access_token,
+          device_id: derivedDeviceId,
+          environment: DATA_ENVIRONMENT,
+          exchange: 'NSE',
+          interval: scalperInterval,
+            lookback_days: scalperVolumeBreakoutLookbackDays,
+            limit: 30,
+          }),
+          signal: controller.signal,
+        })
+
+        const payload = (await response.json().catch(() => null)) as ScalperVolumeBreakoutResponse | ApiErrorPayload | null
+        if (!response.ok) {
+          throw new Error(extractErrorMessage(payload as ApiErrorPayload | null, 'Failed to load volume breakout finder.'))
+        }
+
+        const rows = (payload as ScalperVolumeBreakoutResponse | null)?.rows ?? []
+        if (controller.signal.aborted) return
+
+        setScalperVolumeBreakoutRows(rows)
+        setScalperVolumeBreakoutMessage(
+          rows.length > 0
+            ? `Current ${scalperInterval} candle volume is compared against the average of all ${scalperInterval} candles from the previous ${scalperVolumeBreakoutLookbackDays} trading days, with historical fallback after market hours.`
+            : 'No breakout candidates are available for this trading-day baseline yet.',
+        )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setScalperVolumeBreakoutRows([])
+        setScalperVolumeBreakoutMessage(err instanceof Error ? err.message : 'Failed to load volume breakout finder.')
+      } finally {
+        if (!controller.signal.aborted) {
+          setScalperVolumeBreakoutLoading(false)
+        }
+      }
+    }
+
+    void loadScalperVolumeBreakout()
+    const refreshId = window.setInterval(() => {
+      void loadScalperVolumeBreakout()
+    }, 30000)
+
+    return () => {
+      controller.abort()
+      window.clearInterval(refreshId)
+    }
+  }, [view, session, derivedDeviceId, scalperInterval, scalperVolumeBreakoutLookbackDays])
 
   async function handleStart(event: FormEvent) {
     event.preventDefault()
     setError('')
     setActiveAction('phone')
+    const authEnvironment = pendingExecutionAuth?.environment ?? DATA_ENVIRONMENT
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, environment }),
+        body: JSON.stringify({ phone, environment: authEnvironment, auth_method: authMethod }),
       })
 
       const data = (await response.json()) as StartResponse | ApiErrorPayload
@@ -1265,6 +1965,32 @@ export default function App() {
     }
   }
 
+  async function handleTotp(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setActiveAction('totp')
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/verify-totp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_id: flowId, totp: otp }),
+      })
+
+      const data = (await response.json()) as TotpResponse | ApiErrorPayload
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data, 'Unable to verify TOTP.'))
+      }
+
+      setMessage((data as TotpResponse).message)
+      setStep('mpin')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to verify TOTP.')
+    } finally {
+      setActiveAction(null)
+    }
+  }
+
   async function handleMpin(event: FormEvent) {
     event.preventDefault()
     setError('')
@@ -1283,11 +2009,31 @@ export default function App() {
       }
 
       const result = data as SuccessResponse
-      setSession(result)
-      setIsSessionChecking(false)
-      setMessage(result.message)
-      setStep('success')
-      setView('dashboard')
+      if (pendingExecutionAuth) {
+        setExecutionSessions((current) => ({
+          ...current,
+          [pendingExecutionAuth.environment]: result,
+        }))
+        if (pendingExecutionAuth.returnView === 'no-code') {
+          setNoCodeExecutionEnvironment(pendingExecutionAuth.environment)
+        } else if (pendingExecutionAuth.returnView === 'volume-breakout') {
+          setScannerExecutionEnvironment(pendingExecutionAuth.environment)
+          setScannerAuthReturnContext(pendingExecutionAuth.returnContext ?? null)
+        } else if (pendingExecutionAuth.returnView === 'tradingview-webhook') {
+          setWebhookExecutionEnvironment(pendingExecutionAuth.environment)
+        } else if (pendingExecutionAuth.returnView === 'scalper') {
+          setScalperExecutionEnvironment(pendingExecutionAuth.environment)
+        }
+        setPendingExecutionAuth(null)
+        resetAuthFields(result.message)
+        setView(pendingExecutionAuth.returnView)
+      } else {
+        setSession(result)
+        setIsSessionChecking(false)
+        setMessage(result.message)
+        setStep('success')
+        setView('dashboard')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to verify MPIN.')
     } finally {
@@ -1297,7 +2043,6 @@ export default function App() {
 
   function handleDemoLogin() {
     setSession(demoSession)
-    setEnvironment(demoSession.environment)
     setView('dashboard')
     setStep('success')
     setFlowId('')
@@ -1308,110 +2053,13 @@ export default function App() {
     setError('')
     setProfileMenuOpen(false)
     setMessage(demoSession.message)
-    setNoCodeMessage('Configure one instrument and start the IST scheduler.')
     setVolumeBreakoutMessage(
       'DB bootstrap loads first, then the backend websocket overlays live bucket updates while this page stays open.',
     )
   }
 
-  function handleDashboardCardOpen(nextView: Extract<View, 'no-code' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'>) {
-    if (session?.is_demo && nextView !== 'tradingview-webhook' && nextView !== 'scalper') {
-      setMessage('Demo mode is only for reviewing the UI shell. Use a real login to run tools.')
-      return
-    }
+  function handleDashboardCardOpen(nextView: Extract<View, 'no-code' | 'backtest-lab' | 'volume-breakout' | 'tradingview-webhook' | 'scalper'>) {
     setView(nextView)
-  }
-
-  async function handleNoCodeStart(event: FormEvent) {
-    event.preventDefault()
-    if (!session) return
-
-    setNoCodeError('')
-    setNoCodeMessage('Arming the scheduler...')
-    setActiveAction('no-code')
-
-    try {
-      const payload: Record<string, unknown> = {
-        session_token: session.access_token,
-        device_id: derivedDeviceId,
-        environment: session.environment,
-        instrument,
-        interval,
-        indicator,
-        order_qty: Number(orderQty),
-        order_delivery_type: orderDeliveryType,
-        strategy_side_mode: strategySideMode,
-      }
-
-      if (indicator === 'EMA') {
-        payload.ema = { fast: Number(emaFast), slow: Number(emaSlow) }
-      } else if (indicator === 'MA') {
-        payload.ma = { fast: Number(maFast), slow: Number(maSlow) }
-      } else {
-        payload.rsi = {
-          length: Number(rsiLength),
-          upper: Number(rsiUpper),
-          lower: Number(rsiLower),
-        }
-      }
-
-      const response = await fetch(`${API_BASE_URL}/api/no-code/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-
-      const data = (await response.json()) as NoCodeStartResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data, 'Unable to start No Code Algo.'))
-      }
-
-      const result = data as NoCodeStartResponse
-      setNoCodeStatus(result.job)
-      setNoCodeMessage(result.message)
-      previousAlertCount.current = result.job.alerts.length
-    } catch (err) {
-      setNoCodeError(err instanceof Error ? err.message : 'Unable to start No Code Algo.')
-    } finally {
-      setActiveAction(null)
-    }
-  }
-
-  async function handleNoCodeStop() {
-    setNoCodeError('')
-    setActiveAction('stop')
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/no-code/stop`, {
-        method: 'POST',
-      })
-      const data = (await response.json()) as NoCodeStopResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data, 'Unable to stop No Code Algo.'))
-      }
-      const result = data as NoCodeStopResponse
-      setNoCodeMessage(result.message ?? 'No Code Algo stopped.')
-      setNoCodeStatus({
-        running: false,
-        instrument: null,
-        interval: null,
-        indicator: null,
-        strategy_side_mode: null,
-        last_run_ist: null,
-        next_run_ist: null,
-        market_status: 'stopped',
-        last_signal: null,
-        last_error: null,
-        alerts: [],
-        tracker_rows: [],
-        debug: null,
-        execution: null,
-      })
-      previousAlertCount.current = 0
-    } catch (err) {
-      setNoCodeError(err instanceof Error ? err.message : 'Unable to stop No Code Algo.')
-    } finally {
-      setActiveAction(null)
-    }
   }
 
   async function handleTunnelAction(action: 'start' | 'stop' | 'refresh') {
@@ -1419,162 +2067,94 @@ export default function App() {
     setTunnelAction(action)
     try {
       const endpoint =
-        action === 'start'
-          ? '/api/system/tunnel/start'
-          : action === 'stop'
-            ? '/api/system/tunnel/stop'
-            : '/api/system/tunnel/status'
+        action === 'start' ? '/api/system/tunnel/start' :
+        action === 'stop'  ? '/api/system/tunnel/stop'  : '/api/system/tunnel/status'
       const method = action === 'refresh' ? 'GET' : 'POST'
       const response = await fetch(`${API_BASE_URL}${endpoint}`, { method })
       const data = (await response.json()) as TunnelStatusResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to manage Cloudflare tunnel.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to manage Cloudflare tunnel.'))
       setTunnelStatus(data as TunnelStatusResponse)
     } catch (err) {
       setTunnelStatus((current) => ({
-        running: current?.running ?? false,
-        public_url: current?.public_url ?? null,
+        running: current?.running ?? false, public_url: current?.public_url ?? null,
         target_url: current?.target_url ?? 'http://127.0.0.1:8000',
-        last_error: err instanceof Error ? err.message : 'Unable to manage Cloudflare tunnel.',
-        logs: current?.logs ?? [],
+        last_error: err instanceof Error ? err.message : 'Unable to manage Cloudflare tunnel.', logs: current?.logs ?? [],
       }))
-    } finally {
-      setTunnelAction(null)
-    }
+    } finally { setTunnelAction(null) }
   }
 
   async function handleTradingViewConfigure() {
-    if (!session || session.is_demo) return
-    setTradingViewError('')
-    setTradingViewActionState('configure')
+    if (!session || session.is_demo || !webhookExecutionSession) return
+    setTradingViewError(''); setTradingViewActionState('configure')
     try {
       const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/configure`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_token: session.access_token,
-          device_id: derivedDeviceId,
-          environment: session.environment,
-          user_name: session.user_name,
-          account_id: session.account_id,
+          session_token: webhookExecutionSession.access_token,
+          device_id: webhookExecutionSession.device_id,
+          environment: webhookExecutionEnvironment,
+          user_name: webhookExecutionSession.user_name,
+          account_id: webhookExecutionSession.account_id,
           secret: tradingViewSecret.trim() || undefined,
           order_delivery_type: tradingViewProduct,
         }),
       })
       const data = (await response.json()) as TradingViewWebhookConfigureResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to configure TradingView webhook.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to configure TradingView webhook.'))
       const result = data as TradingViewWebhookConfigureResponse
-      setTradingViewStatus(result.config)
-      setTradingViewSecret(result.config.secret ?? '')
-      setTradingViewProduct(result.config.order_delivery_type ?? tradingViewProduct)
-      setTradingViewMessage(result.message)
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to configure TradingView webhook.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewStatus(result.config); setTradingViewSecret(result.config.secret ?? '')
+      setTradingViewProduct(result.config.order_delivery_type ?? tradingViewProduct); setTradingViewMessage(result.message)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to configure TradingView webhook.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function handleTradingViewReset() {
-    setTradingViewError('')
-    setTradingViewActionState('reset')
+    setTradingViewError(''); setTradingViewActionState('reset')
     try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/reset`, {
-        method: 'POST',
-      })
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/reset`, { method: 'POST' })
       const data = (await response.json()) as TradingViewWebhookResetResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to reset TradingView webhook.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to reset TradingView webhook.'))
       const result = data as TradingViewWebhookResetResponse
-      setTradingViewStatus({
-        configured: false,
-        environment: session?.environment ?? null,
-        broker: session?.broker ?? null,
-        user_name: session?.user_name ?? null,
-        account_id: session?.account_id ?? null,
-        configured_at_utc: null,
-        order_delivery_type: tradingViewProduct,
-        secret: null,
-        has_secret: false,
-        webhook_path: '/api/webhooks/tradingview',
-        webhook_url: tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : null,
-        strategy_template: {},
-        line_alert_template: {},
-        execution_enabled: true,
-        last_error: null,
-        logs: [],
-        history: [],
-        summary: {
-          total_events: 0,
-          live_events: 0,
-          test_events: 0,
-          blocked_events: 0,
-          error_events: 0,
-          accepted_events: 0,
-          today_pnl: 0,
-          today_orders: 0,
-        },
-        order_history: [],
-        positions: [],
-        pnl_summary: {
-          realized_pnl: 0,
-          unrealized_pnl: 0,
-          total_pnl: 0,
-          open_positions: 0,
-          closed_groups: 0,
-        },
-      })
-      setTradingViewSecret('')
-      setTradingViewMessage(result.message)
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to reset TradingView webhook.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewStatus({ configured: false, environment: session?.environment ?? null, broker: session?.broker ?? null, user_name: session?.user_name ?? null, account_id: session?.account_id ?? null, configured_at_utc: null, order_delivery_type: tradingViewProduct, secret: null, has_secret: false, webhook_path: '/api/webhooks/tradingview', webhook_url: tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : null, strategy_template: {}, line_alert_template: {}, execution_enabled: true, last_error: null, logs: [], history: [], summary: { total_events: 0, live_events: 0, test_events: 0, blocked_events: 0, error_events: 0, accepted_events: 0, today_pnl: 0, today_orders: 0 }, order_history: [], positions: [], pnl_summary: { realized_pnl: 0, unrealized_pnl: 0, total_pnl: 0, open_positions: 0, closed_groups: 0 } })
+      setTradingViewSecret(''); setTradingViewMessage(result.message)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to reset TradingView webhook.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function handleTradingViewKillSwitch(enabled: boolean) {
-    setTradingViewError('')
-    setTradingViewActionState(enabled ? 'configure' : 'reset')
+    setTradingViewError(''); setTradingViewActionState(enabled ? 'configure' : 'reset')
     try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/execution-mode`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ execution_enabled: enabled }),
-      })
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/execution-mode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ execution_enabled: enabled }) })
       const data = (await response.json()) as TradingViewWebhookExecutionModeResponse | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to update webhook execution mode.'))
-      }
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to update webhook execution mode.'))
       setTradingViewStatus((current) => (current ? { ...current, execution_enabled: enabled } : current))
       setTradingViewMessage(enabled ? 'Webhook execution enabled.' : 'Kill switch enabled. Incoming webhook orders will be blocked.')
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to update webhook execution mode.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to update webhook execution mode.')
+    } finally { setTradingViewActionState(null) }
   }
 
   async function copyToClipboard(value: string, kind: 'copy-url' | 'copy-strategy' | 'copy-line') {
     setTradingViewActionState(kind)
     try {
       await navigator.clipboard.writeText(value)
-      setTradingViewMessage(
-        kind === 'copy-url'
-          ? 'Webhook URL copied.'
-          : kind === 'copy-strategy'
-            ? 'Strategy JSON copied.'
-            : 'Line alert JSON copied.',
-      )
-    } catch {
-      setTradingViewError('Unable to copy to clipboard.')
-    } finally {
-      setTradingViewActionState(null)
-    }
+      setTradingViewMessage(kind === 'copy-url' ? 'Webhook URL copied.' : kind === 'copy-strategy' ? 'Strategy JSON copied.' : 'Line alert JSON copied.')
+    } catch { setTradingViewError('Unable to copy to clipboard.')
+    } finally { setTradingViewActionState(null) }
+  }
+
+  async function handleTradingViewTest() {
+    if (!session || session.is_demo || !webhookExecutionSession) return
+    setTradingViewError(''); setTradingViewActionState('test')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' }, body: JSON.stringify(tradingViewLinePayload) })
+      const data = (await response.json()) as Record<string, unknown> | ApiErrorPayload
+      if (!response.ok) throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to send test webhook payload.'))
+      setTradingViewMessage('Test payload sent. Check webhook activity below for capture and order result.')
+      const statusResponse = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
+      const statusData = (await statusResponse.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
+      if (statusResponse.ok) setTradingViewStatus(statusData as TradingViewWebhookStatusResponse)
+    } catch (err) { setTradingViewError(err instanceof Error ? err.message : 'Unable to send test webhook payload.')
+    } finally { setTradingViewActionState(null) }
   }
 
   function formatPercent(value: number | null | undefined): string {
@@ -1582,1040 +2162,29 @@ export default function App() {
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
   }
 
-  function formatCompactNumber(value: number | null | undefined): string {
-    if (value === null || value === undefined || Number.isNaN(value)) return '-'
-    if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
-    if (value >= 1_00_000) return `${(value / 1_00_000).toFixed(2)}L`
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
-    return value.toFixed(0)
-  }
-
-  const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Computed values Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const resolvedTradingViewSecret = tradingViewStatus?.secret ?? tradingViewSecret
   const resolvedTradingViewProduct = tradingViewProduct
-  const tradingViewStrategyPayload = {
-    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
-    strategy: tradingViewStrategyName || 'Nubra Strategy Alert',
-    instrument: tradingViewSymbol || 'RELIANCE',
-    exchange: tradingViewExchange || 'NSE',
-    order_side: '{{strategy.order.action}}',
-    order_delivery_type: resolvedTradingViewProduct,
-    price_type: 'MARKET',
-    order_qty: '{{strategy.order.contracts}}',
-    position_size: '{{strategy.position_size}}',
-    tag: tradingViewTag || undefined,
-  }
-  const tradingViewLinePayload = {
-    secret: resolvedTradingViewSecret || '<your-webhook-secret>',
-    strategy: tradingViewStrategyName || 'Nubra Line Alert',
-    instrument: tradingViewSymbol || 'RELIANCE',
-    exchange: tradingViewExchange || 'NSE',
-    order_side: tradingViewOrderAction,
-    order_delivery_type: resolvedTradingViewProduct,
-    price_type: 'MARKET',
-    order_qty: Number(tradingViewQuantity || '1'),
-    tag: tradingViewTag || undefined,
-  }
+  const tradingViewStrategyPayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Strategy Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: '{{strategy.order.action}}', order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: '{{strategy.order.contracts}}', position_size: '{{strategy.position_size}}', tag: tradingViewTag || undefined }
+  const tradingViewLinePayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Line Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: tradingViewOrderAction, order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: Number(tradingViewQuantity || '1'), tag: tradingViewTag || undefined }
   const tradingViewStrategyJson = JSON.stringify(tradingViewStrategyPayload, null, 2)
   const tradingViewLineJson = JSON.stringify(tradingViewLinePayload, null, 2)
-  const filteredHistory = (tradingViewStatus?.history ?? []).filter((entry) =>
-    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
-  )
-  const filteredOrderHistory = (tradingViewStatus?.order_history ?? []).filter((entry) =>
-    historySourceFilter === 'all' ? true : entry.source === historySourceFilter,
-  )
-  const filteredPositions = (tradingViewStatus?.positions ?? []).filter((position) => {
+  const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
+  const filteredHistory = (tradingViewStatus?.history ?? []).filter((e) => historySourceFilter === 'all' ? true : e.source === historySourceFilter)
+  const filteredOrderHistory = (tradingViewStatus?.order_history ?? []).filter((e) => historySourceFilter === 'all' ? true : e.source === historySourceFilter)
+  const filteredPositions = (tradingViewStatus?.positions ?? []).filter((p) => {
     if (historySourceFilter === 'all') return true
-    const matchingTrade = filteredOrderHistory.find(
-      (entry) =>
-        (entry.strategy ?? null) === (position.strategy ?? null) &&
-        (entry.tag ?? null) === (position.tag ?? null) &&
-        entry.instrument === position.instrument &&
-        entry.exchange === position.exchange,
-    )
-    return Boolean(matchingTrade)
+    return Boolean(filteredOrderHistory.find((e) => (e.strategy ?? null) === (p.strategy ?? null) && (e.tag ?? null) === (p.tag ?? null) && e.instrument === p.instrument && e.exchange === p.exchange))
   })
   const webhookConfigured = Boolean(tradingViewStatus?.configured)
   const tunnelReady = Boolean(tunnelStatus?.public_url)
-  const hasTestHistory = (tradingViewStatus?.history ?? []).some((entry) => entry.source === 'test')
+  const clientIdentifier = session?.account_id?.trim() || session?.user_name?.trim().split(' ')[0] || 'Trader'
+  const hasTestHistory = (tradingViewStatus?.history ?? []).some((e) => e.source === 'test')
   const executionEnabled = tradingViewStatus?.execution_enabled !== false
-  const nextWebhookAction = !webhookConfigured
-    ? 'Step 1: save your webhook secret and default product.'
-    : !tunnelReady
-      ? 'Step 2: generate the public webhook URL.'
-      : !hasTestHistory
-        ? 'Step 4: send a test payload before going live.'
-        : !executionEnabled
-          ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.'
-          : 'Setup complete. Copy the live URL and payload into TradingView.'
+  const nextWebhookAction = !webhookConfigured ? 'Step 1: save your webhook secret and default product.' : !tunnelReady ? 'Step 2: generate the public webhook URL.' : !hasTestHistory ? 'Step 4: send a test payload before going live.' : !executionEnabled ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.' : 'Setup complete. Copy the live URL and payload into TradingView.'
 
-  async function handleTradingViewTest() {
-    if (!session || session.is_demo) return
-    setTradingViewError('')
-    setTradingViewActionState('test')
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' },
-        body: JSON.stringify(tradingViewLinePayload),
-      })
-      const data = (await response.json()) as Record<string, unknown> | ApiErrorPayload
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(data as ApiErrorPayload, 'Unable to send test webhook payload.'))
-      }
-      setTradingViewMessage('Test payload sent. Check webhook activity below for capture and order result.')
-      const statusResponse = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/status`)
-      const statusData = (await statusResponse.json()) as TradingViewWebhookStatusResponse | ApiErrorPayload
-      if (statusResponse.ok) {
-        setTradingViewStatus(statusData as TradingViewWebhookStatusResponse)
-      }
-    } catch (err) {
-      setTradingViewError(err instanceof Error ? err.message : 'Unable to send test webhook payload.')
-    } finally {
-      setTradingViewActionState(null)
-    }
-  }
-
-  function renderDashboardNav(activeTab: string) {
-    return (
-      <section className="dashboard-topbar">
-        <header className="dashboard-nav">
-          <div className="dashboard-brand">
-            <img src={nubraLogo} alt="Nubra" className="brand-logo dashboard-brand-logo" />
-            <div className="dashboard-brand-copy">
-              <span>NubraOSS</span>
-              <small>Trading workspace</small>
-            </div>
-          </div>
-
-          <nav className="dashboard-tabs" aria-label="Primary">
-            {dashboardTabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                className={tab === activeTab ? 'dashboard-tab active' : 'dashboard-tab'}
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
-
-          <div className="dashboard-actions">
-            <div className="profile-menu">
-              <button
-                type="button"
-                className="avatar-pill profile-trigger"
-                onClick={() => setProfileMenuOpen((open) => !open)}
-                aria-expanded={profileMenuOpen}
-                aria-haspopup="menu"
-              >
-                {session?.user_name?.[0] ?? 'N'}
-              </button>
-              {profileMenuOpen ? (
-                <div className="profile-popover" role="menu" aria-label="Profile menu">
-                  <div className="profile-popover-header">
-                    <strong>{session?.user_name ?? 'Nubra User'}</strong>
-                    <span>{session?.account_id ?? 'NUBRA'}</span>
-                  </div>
-                  <div className="profile-meta">
-                    <span className="pill">{session?.broker.toLowerCase() ?? 'nubra'}</span>
-                    <span className="pill pill-dark">
-                      {session?.environment === 'UAT' ? 'UAT Mode' : 'Live Mode'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary-button profile-logout"
-                    onClick={() => resetSession()}
-                  >
-                    Logout
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </header>
-
-        <div className="dashboard-meta-row">
-          <div className="dashboard-meta-spacer" />
-          <div className="public-ip-card">
-            <span className="public-ip-label">Public IP</span>
-              <strong>{publicIp || 'Loading...'}</strong>
-            </div>
-          </div>
-      </section>
-    )
-  }
-
-  if (view === 'no-code') {
-    return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Tools')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>No Code Algo</h1>
-              <p>Run one intraday historical-data strategy on exact IST interval boundaries.</p>
-            </div>
-            <div className="header-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={handleNoCodeStop}
-                disabled={activeAction !== null || !noCodeStatus?.running}
-              >
-                {activeAction === 'stop' ? 'Stopping...' : 'Stop'}
-              </button>
-            </div>
-          </section>
-
-          <section className="no-code-grid">
-            <form className="dashboard-module-card no-code-config-card" onSubmit={handleNoCodeStart}>
-              <h2>Strategy Setup</h2>
-              <p className="module-subtitle">
-                Uses today&apos;s intraday historical candles only and ignores the current incomplete candle.
-              </p>
-
-              <label className="field-group">
-                <span>Instrument</span>
-                <input
-                  list="stock-suggestions"
-                  value={instrument}
-                  onChange={(event) => setInstrument(event.target.value.toUpperCase())}
-                  placeholder="Type a stock, e.g. RELIANCE"
-                  required
-                />
-                <datalist id="stock-suggestions">
-                  {stockSuggestions.map((item) => (
-                    <option key={`${item.exchange}-${item.ref_id}`} value={item.instrument}>
-                      {item.display_name} ({item.exchange})
-                    </option>
-                  ))}
-                </datalist>
-              </label>
-
-              <label className="field-group">
-                <span>Interval</span>
-                <select value={interval} onChange={(event) => setIntervalValue(event.target.value as Interval)}>
-                  {intervals.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="param-grid">
-                <label className="field-group">
-                  <span>Order Qty</span>
-                  <input value={orderQty} onChange={(e) => setOrderQty(e.target.value.replace(/\D/g, ''))} />
-                </label>
-                <label className="field-group">
-                  <span>Product</span>
-                  <select
-                    value={orderDeliveryType}
-                    onChange={(event) => setOrderDeliveryType(event.target.value as OrderDeliveryType)}
-                  >
-                    <option value="ORDER_DELIVERY_TYPE_IDAY">Intraday</option>
-                    <option value="ORDER_DELIVERY_TYPE_CNC">CNC</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="field-group">
-                <span>Indicator</span>
-                <div className="indicator-grid">
-                  {(['EMA', 'MA', 'RSI'] as Indicator[]).map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className={indicator === item ? 'indicator-box active' : 'indicator-box'}
-                      onClick={() => setIndicator(item)}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="field-group">
-                <span>Strategy Side</span>
-                <div className="indicator-grid strategy-mode-grid">
-                  <button
-                    type="button"
-                    className={strategySideMode === 'LONG_ONLY' ? 'indicator-box active mode-long' : 'indicator-box mode-long'}
-                    aria-pressed={strategySideMode === 'LONG_ONLY'}
-                    onClick={() => setStrategySideMode('LONG_ONLY')}
-                  >
-                    Long Only
-                  </button>
-                  <button
-                    type="button"
-                    className={strategySideMode === 'SHORT_ONLY' ? 'indicator-box active mode-short' : 'indicator-box mode-short'}
-                    aria-pressed={strategySideMode === 'SHORT_ONLY'}
-                    onClick={() => setStrategySideMode('SHORT_ONLY')}
-                  >
-                    Short Only
-                  </button>
-                  <button
-                    type="button"
-                    className={strategySideMode === 'BOTH' ? 'indicator-box active mode-both' : 'indicator-box mode-both'}
-                    aria-pressed={strategySideMode === 'BOTH'}
-                    onClick={() => setStrategySideMode('BOTH')}
-                  >
-                    Both
-                  </button>
-                </div>
-              </div>
-
-              {indicator === 'EMA' && (
-                <div className="param-grid">
-                  <label className="field-group">
-                    <span>Fast EMA</span>
-                    <input value={emaFast} onChange={(e) => setEmaFast(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Slow EMA</span>
-                    <input value={emaSlow} onChange={(e) => setEmaSlow(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              {indicator === 'MA' && (
-                <div className="param-grid">
-                  <label className="field-group">
-                    <span>Fast MA</span>
-                    <input value={maFast} onChange={(e) => setMaFast(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Slow MA</span>
-                    <input value={maSlow} onChange={(e) => setMaSlow(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              {indicator === 'RSI' && (
-                <div className="param-grid param-grid-three">
-                  <label className="field-group">
-                    <span>RSI Length</span>
-                    <input value={rsiLength} onChange={(e) => setRsiLength(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Upper RSI</span>
-                    <input value={rsiUpper} onChange={(e) => setRsiUpper(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                  <label className="field-group">
-                    <span>Lower RSI</span>
-                    <input value={rsiLower} onChange={(e) => setRsiLower(e.target.value.replace(/\D/g, ''))} />
-                  </label>
-                </div>
-              )}
-
-              <button className="primary-button wide-button" type="submit" disabled={activeAction !== null || !session}>
-                {activeAction === 'no-code' ? 'Starting...' : 'Start No Code Algo'}
-              </button>
-            </form>
-
-            <section className="status-column">
-              <article className="dashboard-module-card">
-                <h2>Runner Status</h2>
-                <div className="status-list">
-                  <div><span>Status</span><strong>{noCodeStatus?.running ? 'Running' : 'Stopped'}</strong></div>
-                  <div><span>Market</span><strong>{noCodeStatus?.market_status ?? 'idle'}</strong></div>
-                  <div><span>Instrument</span><strong>{noCodeStatus?.instrument ?? 'â€”'}</strong></div>
-                  <div><span>Interval</span><strong>{noCodeStatus?.interval ?? 'â€”'}</strong></div>
-                  <div><span>Indicator</span><strong>{noCodeStatus?.indicator ?? 'â€”'}</strong></div>
-                  <div><span>Strategy Side</span><strong>{formatStrategySideMode(noCodeStatus?.strategy_side_mode)}</strong></div>
-                  <div><span>Last Run</span><strong>{noCodeStatus?.last_run_ist ?? 'â€”'}</strong></div>
-                  <div><span>Next Run</span><strong>{noCodeStatus?.next_run_ist ?? 'â€”'}</strong></div>
-                </div>
-              </article>
-
-              <article className="dashboard-module-card tracker-card">
-                <h2>Positions Tracker</h2>
-                <div className="tracker-table">
-                  <div className="tracker-row tracker-head">
-                    <span>Alert</span>
-                    <span>Side</span>
-                    <span>Position</span>
-                    <span>Time</span>
-                  </div>
-                  {(noCodeStatus?.tracker_rows ?? []).length === 0 ? (
-                    <div className="tracker-empty">No position events yet.</div>
-                  ) : (
-                    (noCodeStatus?.tracker_rows ?? []).map((row, index) => (
-                      <div key={`${row.time_ist}-${index}`} className="tracker-row">
-                        <span>{row.alert}</span>
-                        <span>{row.side}</span>
-                        <span>{row.position_state}</span>
-                        <span>{row.time_ist}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </article>
-            </section>
-          </section>
-
-          {noCodeError ? <section className="error-banner dashboard-error">{noCodeError}</section> : null}
-
-        </section>
-      </main>
-    )
-  }
-
-  if (view === 'volume-breakout') {
-    return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Scanner')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>Volume Breakout</h1>
-              <p>DB-backed stock breakout board built from stored 1-minute history for the tracked universe.</p>
-            </div>
-            <div className="header-actions">
-              <span className="pill">
-                {volumeBreakoutStatus?.interval ?? '5m'} / {volumeBreakoutStatus?.refresh_seconds ?? 30}s
-              </span>
-              <span className="pill">
-                Live: {volumeBreakoutStatus?.live_status ?? 'idle'}
-              </span>
-            </div>
-          </section>
-
-          <section className="volume-summary-grid">
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Universe</span>
-              <strong>{volumeBreakoutStatus?.summary.tracked_stocks ?? 0}</strong>
-              <small>Tracked stocks loaded from Supabase.</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Active Breakouts</span>
-              <strong>{volumeBreakoutStatus?.summary.active_breakouts ?? 0}</strong>
-              <small>Stocks above the current volume-ratio threshold.</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Latest Candle</span>
-              <strong>{volumeBreakoutStatus?.summary.latest_candle_ist ? 'Ready' : 'Pending'}</strong>
-              <small>{volumeBreakoutStatus?.summary.latest_candle_ist ?? 'Waiting for stored bars.'}</small>
-            </article>
-            <article className="dashboard-module-card compact-card">
-              <span className="summary-label">Price Confirmation</span>
-              <strong>{volumeBreakoutStatus?.summary.leaders_with_price_breakout ?? 0}</strong>
-              <small>Breakouts also trading above prior lookback highs.</small>
-            </article>
-          </section>
-
-          <section className="dashboard-info-card volume-meta-card">
-            <div>
-              <strong>Scanner Mode</strong>
-              <p>{volumeBreakoutMessage}</p>
-            </div>
-            <div className="volume-meta-stack">
-              <span className="pill">
-                WS symbols: {volumeBreakoutStatus?.live_subscribed_symbols ?? 0}
-              </span>
-              <span className="pill">
-                Last live event: {volumeBreakoutStatus?.live_last_event_ist ?? 'Waiting...'}
-              </span>
-              <span className="pill">Last run: {volumeBreakoutStatus?.last_run_ist ?? 'Waiting...'}</span>
-              <span className="pill">Next run: {volumeBreakoutStatus?.next_run_ist ?? 'Waiting...'}</span>
-            </div>
-          </section>
-
-          <section className="volume-breakout-grid">
-            <article className="dashboard-module-card volume-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Market Rankers</h2>
-                  <p>Highest volume-ratio names computed from stored 1-minute history.</p>
-                </div>
-              </div>
-              <div className="table-shell">
-                <div className="table-row table-head volume-stock-grid">
-                  <span>Stock</span>
-                  <span>Exchange</span>
-                  <span>Ratio</span>
-                  <span>Volume</span>
-                  <span>Price</span>
-                </div>
-                {(volumeBreakoutStatus?.market_breakouts ?? []).length === 0 ? (
-                  <div className="table-empty">No market-wide leaders available yet.</div>
-                ) : (
-                  (volumeBreakoutStatus?.market_breakouts ?? []).map((row) => (
-                    <div key={`${row.symbol}-${row.candle_time_ist}`} className="table-row volume-stock-grid">
-                      <span>
-                        <strong>{row.symbol}</strong>
-                        <small>{row.display_name}</small>
-                      </span>
-                      <span>{row.exchange}</span>
-                      <span className={row.meets_breakout ? 'text-success' : 'text-muted'}>
-                        {row.volume_ratio.toFixed(2)}x
-                      </span>
-                      <span>{formatCompactNumber(row.current_volume)}</span>
-                      <span className={row.is_green ? 'text-success' : 'text-danger'}>
-                        {row.last_price.toFixed(2)}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </article>
-          </section>
-
-          <article className="dashboard-module-card volume-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Fresh Entrants</h2>
-                <p>New names that entered the breakout list on the latest completed candle.</p>
-              </div>
-            </div>
-            <div className="table-shell">
-              <div className="table-row table-head volume-recent-grid">
-                <span>Stock</span>
-                <span>Exchange</span>
-                <span>Time</span>
-                <span>Ratio</span>
-                <span>Price Breakout</span>
-              </div>
-              {(volumeBreakoutStatus?.recent_breakouts ?? []).length === 0 ? (
-                <div className="table-empty">No fresh entrants yet. The next completed run will populate this feed.</div>
-              ) : (
-                (volumeBreakoutStatus?.recent_breakouts ?? []).map((row) => (
-                  <div key={`recent-${row.symbol}-${row.candle_time_ist}`} className="table-row volume-recent-grid">
-                    <span>{row.symbol}</span>
-                    <span>{row.exchange}</span>
-                    <span>{row.candle_time_ist}</span>
-                    <span>{row.volume_ratio.toFixed(2)}x</span>
-                    <span className={row.is_price_breakout ? 'text-success' : 'text-muted'}>
-                      {row.is_price_breakout ? formatPercent(row.price_breakout_pct) : 'Not yet'}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
-
-          {volumeBreakoutError ? <section className="error-banner dashboard-error">{volumeBreakoutError}</section> : null}
-        </section>
-      </main>
-    )
-  }
-
-  if (view === 'tradingview-webhook') {
-    return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('TradingView')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>TradingView Webhook</h1>
-              <p>Configure the Nubra webhook, copy either the manual or strategy alert JSON, and monitor incoming TradingView executions.</p>
-            </div>
-            <div className="header-actions">
-              <span className="pill">
-                {tradingViewStatus?.configured ? 'Configured' : 'Not configured'}
-              </span>
-              <span className="pill">
-                {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'Intraday' : 'CNC'}
-              </span>
-              <span className={tradingViewStatus?.execution_enabled === false ? 'pill pill-danger' : 'pill pill-success'}>
-                {tradingViewStatus?.execution_enabled === false ? 'Kill Switch On' : 'Execution On'}
-              </span>
-            </div>
-          </section>
-
-          <section className="dashboard-info-card webhook-guide-banner">
-            <div>
-              <strong>Next Step</strong>
-              <p>{nextWebhookAction}</p>
-            </div>
-            <div className="history-meta-row">
-              <span className={webhookConfigured ? 'pill pill-success' : 'pill'}>1. Config {webhookConfigured ? 'Done' : 'Pending'}</span>
-              <span className={tunnelReady ? 'pill pill-success' : 'pill'}>2. URL {tunnelReady ? 'Done' : 'Pending'}</span>
-              <span className={hasTestHistory ? 'pill pill-success' : 'pill'}>3. Test {hasTestHistory ? 'Done' : 'Pending'}</span>
-              <span className={executionEnabled ? 'pill pill-success' : 'pill pill-danger'}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
-            </div>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={webhookConfigured ? 'step-badge done' : 'step-badge'}>1</span>
-              <div>
-                <h2>Set Up Webhook Access</h2>
-                <p>Create the private secret and execution defaults that every TradingView alert will use.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card webhook-config-card">
-              <h2>Access & Execution Settings</h2>
-              <p className="module-subtitle">
-                Define the shared webhook secret and choose the default order product type for incoming TradingView alerts.
-              </p>
-
-              <label className="field-group">
-                <span>Webhook Secret</span>
-                <input
-                  value={tradingViewSecret}
-                  onChange={(event) => setTradingViewSecret(event.target.value)}
-                  placeholder="Auto-generated if left blank"
-                />
-              </label>
-
-              <label className="field-group">
-                <span>Default Product</span>
-                <select
-                  value={tradingViewProduct}
-                  onChange={(event) => setTradingViewProduct(event.target.value as OrderDeliveryType)}
-                >
-                  <option value="ORDER_DELIVERY_TYPE_IDAY">Intraday (MIS)</option>
-                  <option value="ORDER_DELIVERY_TYPE_CNC">Delivery (CNC)</option>
-                </select>
-              </label>
-
-              <div className="kill-switch-card">
-                <div>
-                  <strong>Order Execution Control</strong>
-                  <p className="module-subtitle">
-                    Pause live order placement instantly while continuing to capture webhook requests in the activity log.
-                  </p>
-                </div>
-                <div className="kill-switch-actions">
-                  <button
-                    type="button"
-                    className={tradingViewStatus?.execution_enabled === false ? 'secondary-button' : 'primary-button'}
-                    onClick={() => handleTradingViewKillSwitch(true)}
-                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                  >
-                    Allow Orders
-                  </button>
-                  <button
-                    type="button"
-                    className={tradingViewStatus?.execution_enabled === false ? 'primary-button' : 'secondary-button'}
-                    onClick={() => handleTradingViewKillSwitch(false)}
-                    disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                  >
-                    Pause Orders
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="primary-button wide-button"
-                onClick={handleTradingViewConfigure}
-                disabled={!session || Boolean(session?.is_demo) || tradingViewActionState !== null}
-              >
-                {tradingViewActionState === 'configure' ? 'Saving...' : 'Save Webhook Settings'}
-              </button>
-              <button
-                type="button"
-                className="secondary-button wide-button"
-                onClick={handleTradingViewReset}
-                disabled={tradingViewActionState !== null || !tradingViewStatus?.configured}
-              >
-                {tradingViewActionState === 'reset' ? 'Resetting...' : 'Clear Webhook Settings'}
-              </button>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={tunnelReady ? 'step-badge done' : 'step-badge'}>2</span>
-              <div>
-                <h2>Generate Public URL</h2>
-                <p>Create the public HTTPS endpoint that TradingView or Postman will send requests to.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card">
-              <h2>Public Endpoint</h2>
-              <p className="module-subtitle">
-                Use the built-in Cloudflare tunnel so TradingView can reach your local machine.
-              </p>
-
-              <div className="tunnel-grid">
-                <div className="tunnel-panel">
-                  <span className="summary-label">Webhook URL</span>
-                  <strong className="tunnel-url">
-                    {tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : 'Generate URL first'}
-                  </strong>
-                  <small>
-                    TradingView requires a public HTTPS endpoint. Start the tunnel once and reuse this URL while it stays running.
-                  </small>
-                </div>
-                <div className="tunnel-panel">
-                  <span className="summary-label">Session</span>
-                  <strong>{tradingViewStatus?.user_name ?? session?.user_name ?? 'Nubra User'}</strong>
-                  <small>{session?.environment ?? 'UAT'} / {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS' : 'CNC'}</small>
-                </div>
-              </div>
-
-              <div className="tunnel-actions">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => handleTunnelAction('start')}
-                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
-                >
-                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('refresh')}
-                  disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('stop')}
-                  disabled={!tunnelStatus?.running || tunnelAction !== null}
-                >
-                  Stop
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(webhookUrl, 'copy-url')}
-                  disabled={!webhookUrl || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-url' ? 'Copying...' : 'Copy Webhook URL'}
-                </button>
-              </div>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className="step-badge">3</span>
-              <div>
-                <h2>Build Payload</h2>
-                <p>Choose manual or strategy mode, set your fields, and generate the Nubra JSON alert body.</p>
-              </div>
-            </div>
-          <section className="dashboard-module-card tradingview-builder-card">
-            <div className="code-card-header">
-              <div>
-                <h2>Payload Builder</h2>
-                <p className="module-subtitle">Generate the exact JSON alert body your TradingView alert should send.</p>
-              </div>
-              <div className="mode-toggle">
-                <button
-                  type="button"
-                  className={tradingViewMode === 'line' ? 'indicator-box active' : 'indicator-box'}
-                  onClick={() => setTradingViewMode('line')}
-                >
-                  Line Alert
-                </button>
-                <button
-                  type="button"
-                  className={tradingViewMode === 'strategy' ? 'indicator-box active' : 'indicator-box'}
-                  onClick={() => setTradingViewMode('strategy')}
-                >
-                  Strategy Alert
-                </button>
-              </div>
-            </div>
-
-            <div className="tradingview-form-grid">
-              <label className="field-group">
-                <span>Strategy Name</span>
-                <input value={tradingViewStrategyName} onChange={(event) => setTradingViewStrategyName(event.target.value)} />
-              </label>
-              <label className="field-group">
-                <span>Symbol</span>
-                <input value={tradingViewSymbol} onChange={(event) => setTradingViewSymbol(event.target.value.toUpperCase())} />
-              </label>
-              <label className="field-group">
-                <span>Exchange</span>
-                <select value={tradingViewExchange} onChange={(event) => setTradingViewExchange(event.target.value)}>
-                  <option value="NSE">NSE</option>
-                  <option value="BSE">BSE</option>
-                </select>
-              </label>
-              <label className="field-group">
-                <span>Action</span>
-                <select value={tradingViewOrderAction} onChange={(event) => setTradingViewOrderAction(event.target.value as TradingViewAction)}>
-                  <option value="BUY">BUY</option>
-                  <option value="SELL">SELL</option>
-                </select>
-              </label>
-              <label className="field-group">
-                <span>Quantity</span>
-                <input value={tradingViewQuantity} onChange={(event) => setTradingViewQuantity(event.target.value.replace(/\D/g, '') || '1')} />
-              </label>
-              <label className="field-group">
-                <span>Tag</span>
-                <input value={tradingViewTag} onChange={(event) => setTradingViewTag(event.target.value)} placeholder="swing-1 or 2026-04-15" />
-              </label>
-              <label className="field-group">
-                <span>Product</span>
-                <input value={resolvedTradingViewProduct} disabled />
-              </label>
-            </div>
-
-              <div className="dashboard-info-card compact-info-row">
-                <div>
-                  <strong>How to use</strong>
-                  <p>
-                    Configure the webhook first, copy the URL into TradingView, then paste the generated Nubra alert JSON below into the alert message box.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                className="primary-button"
-                onClick={handleTradingViewTest}
-                disabled={!tradingViewStatus?.configured || !session || Boolean(session.is_demo) || tradingViewActionState !== null}
-              >
-                {tradingViewActionState === 'test' ? 'Sending...' : 'Send Test Payload'}
-              </button>
-            </div>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span>
-              <div>
-                <h2>Copy and Test</h2>
-                <p>Copy the payload you need, then send a test order before you switch to live TradingView alerts.</p>
-              </div>
-            </div>
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card code-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Nubra Strategy JSON</h2>
-                  <p className="module-subtitle">Use this for TradingView strategy scripts where side and quantity come from TradingView placeholders.</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')}
-                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}
-                </button>
-              </div>
-              <pre className="code-block">{tradingViewStrategyJson}</pre>
-            </article>
-
-            <article className="dashboard-module-card code-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Nubra Manual Alert JSON</h2>
-                  <p className="module-subtitle">Use this for normal alerts where you want to send a fixed side and quantity in the message.</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')}
-                  disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}
-                >
-                  {tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}
-                </button>
-              </div>
-              <pre className="code-block">{tradingViewLineJson}</pre>
-            </article>
-          </section>
-          </section>
-
-          <section className="webhook-step-section">
-            <div className="step-heading">
-              <span className={executionEnabled ? 'step-badge done' : 'step-badge blocked'}>5</span>
-              <div>
-                <h2>Go Live and Monitor</h2>
-                <p>After a successful test, paste the URL and payload into TradingView and watch history below for live traffic.</p>
-              </div>
-            </div>
-
-          <section className="tradingview-grid">
-            <article className="dashboard-module-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Webhook Order History</h2>
-                  <p className="module-subtitle">Every accepted webhook order with time, quantity, sent price, fill price, and current mark-to-market.</p>
-                </div>
-                <div className="history-meta-row">
-                  <span className="pill">{filteredOrderHistory.length} orders</span>
-                </div>
-              </div>
-              {filteredOrderHistory.length === 0 ? (
-                <div className="table-empty">No accepted webhook orders yet.</div>
-              ) : (
-                <div className="table-shell">
-                  <div className="table-row table-head webhook-order-grid">
-                    <span>Time</span>
-                    <span>Trade</span>
-                    <span>Qty / Status</span>
-                    <span>Prices</span>
-                    <span>P&amp;L</span>
-                  </div>
-                  {filteredOrderHistory.map((entry) => (
-                    <div key={`${entry.time_ist}-${entry.order_id ?? entry.instrument ?? 'trade'}`} className="table-row webhook-order-grid">
-                      <span>
-                        <strong>{entry.time_ist}</strong>
-                        <small>{entry.source === 'test' ? 'Test' : 'Live'}</small>
-                      </span>
-                      <span>
-                        <strong>{entry.instrument ?? '-'}</strong>
-                        <small>
-                          {(entry.action ?? '-')} | {entry.strategy ?? 'No strategy'} | {entry.tag ?? 'No tag'}
-                        </small>
-                      </span>
-                      <span>
-                        <strong>{entry.filled_qty ?? entry.placed_qty ?? entry.requested_qty ?? '-'}</strong>
-                        <small>{entry.order_status ?? 'Pending'}</small>
-                      </span>
-                      <span>
-                        <strong>Fill {entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong>
-                        <small>
-                          Sent {entry.order_price?.toFixed(2) ?? 'Pending'} | LTP {entry.current_price?.toFixed(2) ?? 'Pending'}
-                        </small>
-                      </span>
-                      <span>
-                        <strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong>
-                        <small>Order #{entry.order_id ?? '-'} </small>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="dashboard-module-card">
-              <div className="code-card-header">
-                <div>
-                  <h2>Webhook Positions</h2>
-                  <p className="module-subtitle">Matched positions and P&amp;L grouped by strategy, tag, and instrument.</p>
-                </div>
-                <div className="history-meta-row">
-                  <span className="pill">{filteredPositions.length} groups</span>
-                </div>
-              </div>
-              {filteredPositions.length === 0 ? (
-                <div className="table-empty">No grouped webhook positions yet.</div>
-              ) : (
-                <div className="position-ledger-list">
-                  {filteredPositions.map((position) => (
-                    <div key={`${position.strategy ?? 'none'}-${position.tag ?? 'none'}-${position.instrument}-${position.exchange}`} className="position-ledger-card">
-                      <div className="position-ledger-head">
-                        <div>
-                          <strong>{position.instrument}</strong>
-                          <small>
-                            {position.exchange} | {position.strategy ?? 'No strategy'} | {position.tag ?? 'No tag'}
-                          </small>
-                        </div>
-                        <span className={position.direction === 'LONG' ? 'pill pill-success' : position.direction === 'SHORT' ? 'pill pill-danger' : 'pill'}>
-                          {position.direction}
-                        </span>
-                      </div>
-                      <div className="history-stats-grid position-ledger-grid">
-                        <div><span>Net Qty</span><strong>{position.net_qty}</strong></div>
-                        <div><span>Avg Entry</span><strong>{position.avg_entry_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                        <div><span>Current Price</span><strong>{position.current_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                        <div><span>Realized</span><strong>{position.realized_pnl.toFixed(2)}</strong></div>
-                        <div><span>Unrealized</span><strong>{position.unrealized_pnl.toFixed(2)}</strong></div>
-                        <div><span>Total P&amp;L</span><strong>{position.total_pnl.toFixed(2)}</strong></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-          </section>
-
-          <article className="dashboard-module-card">
-            <div className="code-card-header">
-              <div>
-                <h2>Webhook Event Log</h2>
-                <p className="module-subtitle">Raw request and execution logs for test sends and live TradingView webhook traffic.</p>
-              </div>
-              <div className="mode-toggle">
-                <button type="button" className={historySourceFilter === 'all' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('all')}>
-                  All
-                </button>
-                <button type="button" className={historySourceFilter === 'test' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('test')}>
-                  Test
-                </button>
-                <button type="button" className={historySourceFilter === 'live' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('live')}>
-                  Live
-                </button>
-              </div>
-            </div>
-            {(filteredHistory ?? []).length === 0 ? (
-              <div className="table-empty">No webhook history yet.</div>
-            ) : (
-              <div className="webhook-log-list">
-                {filteredHistory.map((entry) => (
-                  <div key={entry.id} className={`webhook-log-item ${entry.status === 'accepted' ? 'success' : entry.status === 'error' || entry.status === 'blocked' ? 'error' : ''}`}>
-                    <div className="webhook-log-head">
-                      <strong>{entry.message}</strong>
-                      <span>{entry.time_ist}</span>
-                    </div>
-                    <div className="history-meta-row">
-                      <span className="pill">{entry.source === 'test' ? 'Test' : 'Live'}</span>
-                      <span className="pill">{entry.status}</span>
-                      <span className="pill">{entry.strategy ?? 'No strategy'}</span>
-                      <span className="pill">{entry.tag ?? 'No tag'}</span>
-                      <span className="pill">{entry.day_ist}</span>
-                    </div>
-                    <div className="history-stats-grid">
-                      <div><span>Instrument</span><strong>{entry.instrument ?? '-'}</strong></div>
-                      <div><span>Action</span><strong>{entry.action ?? '-'}</strong></div>
-                      <div><span>Qty</span><strong>{entry.quantity ?? '-'}</strong></div>
-                      <div><span>Order</span><strong>{entry.order_status ?? '-'}</strong></div>
-                      <div><span>P&L</span><strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong></div>
-                    </div>
-                    <div className="history-stats-grid history-stats-grid-detail">
-                      <div><span>Requested Qty</span><strong>{entry.requested_qty ?? '-'}</strong></div>
-                      <div><span>Placed Qty</span><strong>{entry.placed_qty ?? '-'}</strong></div>
-                      <div><span>Filled Qty</span><strong>{entry.filled_qty ?? '-'}</strong></div>
-                      <div><span>Order Price</span><strong>{entry.order_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>Avg Fill Price</span><strong>{entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>LTP Used</span><strong>{entry.ltp_price?.toFixed(2) ?? 'Pending'}</strong></div>
-                      <div><span>Order ID</span><strong>{entry.order_id ?? '-'}</strong></div>
-                      <div><span>Ref ID</span><strong>{entry.ref_id ?? '-'}</strong></div>
-                      <div><span>Lot Size</span><strong>{entry.lot_size ?? '-'}</strong></div>
-                      <div><span>Tick Size</span><strong>{entry.tick_size ?? '-'}</strong></div>
-                    </div>
-                    {entry.payload ? <pre className="code-block compact">{JSON.stringify(entry.payload, null, 2)}</pre> : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-          </section>
-
-          {tradingViewError ? <section className="error-banner dashboard-error">{tradingViewError}</section> : null}
-          {tradingViewMessage ? <section className="message-banner dashboard-info-card">{tradingViewMessage}</section> : null}
-        </section>
-      </main>
-    )
-  }
-
-  if (view === 'scalper') {
-  const { status: liveStatus, error: liveError, connected: liveConnected, optionPair, panelMeta, registerPanel } = scalperLive
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Scalper local vars Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  const { status: liveStatus, error: liveError, connected: liveConnected, registerPanel } = scalperLive
   const scalperFeedLabel = scalperValidating
     ? 'Checking Session'
     : liveConnected
@@ -2630,54 +2199,389 @@ export default function App() {
       : liveError
         ? '#ef4444'
         : '#64748b'
-    const underlyingMeta = panelMeta?.underlying ?? null
-    const callMeta = panelMeta?.call_option ?? null
-    const putMeta = panelMeta?.put_option ?? null
+  const underlyingMeta = scalperPanelMeta?.underlying ?? (scalperSnapshot
+    ? {
+        instrument: scalperSnapshot.underlying.instrument,
+        display_name: scalperSnapshot.underlying.display_name,
+        exchange: scalperSnapshot.underlying.exchange,
+        instrument_type: scalperSnapshot.underlying.instrument_type,
+        interval: scalperSnapshot.underlying.interval,
+        last_price: scalperSnapshot.underlying.last_price,
+      }
+    : null)
+  const callMeta = scalperPanelMeta?.call_option ?? (scalperSnapshot
+    ? {
+        instrument: scalperSnapshot.call_option.instrument,
+        display_name: scalperSnapshot.call_option.display_name,
+        exchange: scalperSnapshot.call_option.exchange,
+        instrument_type: scalperSnapshot.call_option.instrument_type,
+        interval: scalperSnapshot.call_option.interval,
+        last_price: scalperSnapshot.call_option.last_price,
+      }
+    : null)
+  const putMeta = scalperPanelMeta?.put_option ?? (scalperSnapshot
+    ? {
+        instrument: scalperSnapshot.put_option.instrument,
+        display_name: scalperSnapshot.put_option.display_name,
+        exchange: scalperSnapshot.put_option.exchange,
+        instrument_type: scalperSnapshot.put_option.instrument_type,
+        interval: scalperSnapshot.put_option.interval,
+        last_price: scalperSnapshot.put_option.last_price,
+      }
+    : null)
+  const callFallbackCandles =
+    livePanelCandleCounts.call_option > 0 ? undefined : scalperSnapshot?.call_option.candles
+  const underlyingFallbackCandles =
+    livePanelCandleCounts.underlying > 0 ? undefined : scalperSnapshot?.underlying.candles
+  const putFallbackCandles =
+    livePanelCandleCounts.put_option > 0 ? undefined : scalperSnapshot?.put_option.candles
+  const callHasChartData = livePanelCandleCounts.call_option > 0 || Boolean(callFallbackCandles?.length)
+  const underlyingHasChartData =
+    livePanelCandleCounts.underlying > 0 || Boolean(underlyingFallbackCandles?.length)
+  const putHasChartData = livePanelCandleCounts.put_option > 0 || Boolean(putFallbackCandles?.length)
+  const scalperChartEmptyLabel = liveError
+    ? 'Feed unavailable'
+    : liveConnected
+      ? 'Waiting for candle history...'
+      : 'Loading candles...'
+  const scalperChartHeight = 248
+
+  // Ã¢â€â‚¬Ã¢â€â‚¬ OTP/MPIN cell state Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  const otpCells = useRef<(HTMLInputElement | null)[]>([])
+  const mpinCells = useRef<(HTMLInputElement | null)[]>([])
+  const [otpDigits, setOtpDigits] = useState(['','','','','',''])
+  const [mpinDigits, setMpinDigits] = useState(['','','',''])
+
+  function handleOtpCell(index: number, value: string) {
+    if (!/^\d?$/.test(value)) return
+    const next = [...otpDigits]; next[index] = value; setOtpDigits(next); setOtp(next.join(''))
+    if (value && index < 5) otpCells.current[index + 1]?.focus()
+  }
+  function handleMpinCell(index: number, value: string) {
+    if (!/^\d?$/.test(value)) return
+    const next = [...mpinDigits]; next[index] = value; setMpinDigits(next); setMpin(next.join(''))
+    if (value && index < 3) mpinCells.current[index + 1]?.focus()
+  }
+
+  const phoneComplete = flowId.length > 0
+  const otpComplete = step === 'mpin' || step === 'success'
+  const mpinComplete = step === 'success'
+  const currentStep = step === 'start' ? 0 : step === 'otp' || step === 'totp' ? 1 : 2
+
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Routing Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  if (view === 'no-code') {
+    const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
+    return (
+      <StrategyBuilder
+        apiBaseUrl={API_BASE_URL}
+        sessionToken={session?.access_token ?? ''}
+        deviceId={derivedDeviceId}
+        dataEnvironment={DATA_ENVIRONMENT}
+        executionEnvironment={noCodeExecutionEnvironment}
+        executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
+        executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
+        onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
+        onBack={() => setView('dashboard')}
+        renderNav={(activeTab: string) => renderDashboardNav(activeTab)}
+      />
+    )
+  }
+
+  if (view === 'backtest-lab') {
+    const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
+    return (
+      <StrategyBuilder
+        apiBaseUrl={API_BASE_URL}
+        sessionToken={session?.access_token ?? ''}
+        deviceId={derivedDeviceId}
+        dataEnvironment={DATA_ENVIRONMENT}
+        executionEnvironment={noCodeExecutionEnvironment}
+        executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
+        executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
+        onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
+        onBack={() => setView('dashboard')}
+        renderNav={(activeTab: string) => renderDashboardNav(activeTab)}
+        mode="backtest"
+      />
+    )
+  }
+
+  if (view === 'volume-breakout') {
+    const scannerExecutionSession = getExecutionSession(scannerExecutionEnvironment)
+    return (
+      <VolumeDashboard
+        session={session!}
+        executionEnvironment={scannerExecutionEnvironment}
+        executionSessionToken={scannerExecutionSession?.access_token ?? ''}
+        executionDeviceId={scannerExecutionSession?.device_id ?? ''}
+        hasExecutionSession={Boolean(scannerExecutionSession)}
+        authReturnContext={scannerAuthReturnContext}
+        onAuthReturnContextConsumed={() => setScannerAuthReturnContext(null)}
+        onExecutionEnvironmentSelect={handleScannerExecutionEnvironmentSelect}
+        onBack={() => setView('dashboard')}
+        renderNav={(activeTab: string) => renderDashboardNav(activeTab)}
+      />
+    )
+  }
+
+  if (view === 'tradingview-webhook') {
+    const webhookSessionLabel = webhookExecutionSession?.environment ?? webhookExecutionEnvironment
+    const webhookUserLabel = webhookExecutionSession?.user_name ?? session?.user_name ?? 'Nubra User'
+    const webhookExecutionReady = Boolean(webhookExecutionSession) && !session?.is_demo
+    return (
+      <div className="subview-shell">
+        {renderDashboardNav('Webhook')}
+        <main className="subview-main webhook-main">
+          <div className="webhook-page-head">
+            <button className="ghost-inline" onClick={() => setView('dashboard')}>Back to Dashboard</button>
+            <span className="builder-crumb-sep">/</span>
+            <span className="webhook-page-crumb">TradingView Webhook</span>
+            <div className="webhook-page-pills">
+              {renderExecutionEnvironmentToggle(webhookExecutionEnvironment, handleWebhookExecutionEnvironmentSelect)}
+              <span className={`pill-v2 ${webhookConfigured ? 'pill-success' : ''}`}>{webhookConfigured ? 'Configured' : 'Not configured'}</span>
+              <span className="pill-v2">{tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'Intraday' : 'CNC'}</span>
+              <span className={`pill-v2 ${executionEnabled ? 'pill-success' : 'pill-danger'}`}>{executionEnabled ? 'Execution On' : 'Kill Switch On'}</span>
+            </div>
+          </div>
+
+          <div className="msg-banner webhook-guide-banner">
+            <div className="webhook-guide-copy">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Next Step</strong>
+              <p style={{ fontSize: 13, color: 'var(--fg-dim)' }}>{nextWebhookAction}</p>
+            </div>
+            <div className="webhook-guide-chips">
+              <span className={`pill-v2 ${webhookConfigured ? 'pill-success' : ''}`}>1. Config {webhookConfigured ? 'Done' : 'Pending'}</span>
+              <span className={`pill-v2 ${tunnelReady ? 'pill-success' : ''}`}>2. URL {tunnelReady ? 'Done' : 'Pending'}</span>
+              <span className={`pill-v2 ${hasTestHistory ? 'pill-success' : ''}`}>3. Test {hasTestHistory ? 'Done' : 'Pending'}</span>
+              <span className={`pill-v2 ${executionEnabled ? 'pill-success' : 'pill-danger'}`}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
+            </div>
+          </div>
+
+          {/* Step 1: Configure */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={webhookConfigured ? 'step-badge done' : 'step-badge'}>1</span><div><h2>Set Up Webhook Access</h2><p>Create the private secret and execution defaults.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card webhook-card-span">
+                <div className="sb-card-head">
+                  <div>
+                    <span className="sb-card-kicker">Access Setup</span>
+                    <h3>Access & Execution Settings</h3>
+                  </div>
+                  <div className="webhook-head-metrics">
+                    <span className={`pill-v2 ${tradingViewStatus?.execution_enabled !== false ? 'pill-success' : 'pill-danger'}`}>
+                      {tradingViewStatus?.execution_enabled !== false ? 'Orders enabled' : 'Kill switch on'}
+                    </span>
+                    <span className="pill-v2">{tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS default' : 'CNC default'}</span>
+                  </div>
+                </div>
+                <div className="webhook-config-grid">
+                  <div className="webhook-config-main">
+                    <div><label className="field-group-label">Webhook Secret</label><input className="field-input" value={tradingViewSecret} onChange={(e) => setTradingViewSecret(e.target.value)} placeholder="Auto-generated if left blank" /></div>
+                    <div><label className="field-group-label">Default Product</label><select className="field-select" value={tradingViewProduct} onChange={(e) => setTradingViewProduct(e.target.value as OrderDeliveryType)}><option value="ORDER_DELIVERY_TYPE_IDAY">Intraday (MIS)</option><option value="ORDER_DELIVERY_TYPE_CNC">Delivery (CNC)</option></select></div>
+                    <div className="webhook-config-actions">
+                      <button className="primary-btn webhook-action-button" onClick={handleTradingViewConfigure} disabled={!webhookExecutionReady || tradingViewActionState !== null}>{tradingViewActionState === 'configure' ? 'Saving...' : 'Save Webhook Settings'}</button>
+                      <button className="ghost-inline webhook-action-button" onClick={handleTradingViewReset} disabled={tradingViewActionState !== null || !tradingViewStatus?.configured}>{tradingViewActionState === 'reset' ? 'Resetting...' : 'Clear Webhook Settings'}</button>
+                    </div>
+                  </div>
+                  <div className="webhook-config-side">
+                    <div className="kill-switch-card webhook-status-card">
+                      <div><strong>Order Execution</strong><p>Pause live orders without stopping the webhook or changing the payload format.</p></div>
+                      <div className="kill-switch-actions">
+                        <button className={`ghost-inline ${tradingViewStatus?.execution_enabled !== false ? 'ghost-inline-accent' : ''}`} onClick={() => handleTradingViewKillSwitch(true)} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>Allow Orders</button>
+                        <button className="ghost-inline" onClick={() => handleTradingViewKillSwitch(false)} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>Pause Orders</button>
+                      </div>
+                    </div>
+                    <div className="webhook-status-grid">
+                      <div className="webhook-mini-stat"><span>Broker</span><strong>{session?.broker ?? 'Nubra'}</strong></div>
+                      <div className="webhook-mini-stat"><span>Session</span><strong>{webhookSessionLabel}</strong></div>
+                      <div className="webhook-mini-stat"><span>Webhook</span><strong>{webhookConfigured ? 'Configured' : 'Pending'}</strong></div>
+                      <div className="webhook-mini-stat"><span>Execution</span><strong>{executionEnabled ? 'Live enabled' : 'Blocked'}</strong></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 2: Tunnel */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={tunnelReady ? 'step-badge done' : 'step-badge'}>2</span><div><h2>Generate Public URL</h2><p>Create the public HTTPS endpoint TradingView will POST to.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card webhook-card-span">
+                <div className="sb-card-head">
+                  <div>
+                    <span className="sb-card-kicker">Tunnel & Routing</span>
+                    <h3>Generate Public URL</h3>
+                  </div>
+                  <div className="webhook-head-metrics">
+                    <span className={`pill-v2 ${tunnelReady ? 'pill-success' : ''}`}>{tunnelReady ? 'HTTPS ready' : 'Tunnel offline'}</span>
+                  </div>
+                </div>
+                <div className="tunnel-grid">
+                  <div className="tunnel-panel"><span className="summary-label">Webhook URL</span><strong className="tunnel-url">{tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : 'Generate URL first'}</strong><small>TradingView requires HTTPS. Reuse while tunnel runs.</small></div>
+                  <div className="tunnel-panel"><span className="summary-label">Session</span><strong>{tradingViewStatus?.user_name ?? webhookUserLabel}</strong><small>{webhookSessionLabel} / {tradingViewProduct === 'ORDER_DELIVERY_TYPE_IDAY' ? 'MIS' : 'CNC'}</small></div>
+                </div>
+                <div className="tunnel-actions webhook-toolbar-actions" style={{ marginTop: 14 }}>
+                  <button className="ghost-inline ghost-inline-accent" onClick={() => handleTunnelAction('start')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>{tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}</button>
+                  <button className="ghost-inline" onClick={() => handleTunnelAction('refresh')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>Refresh</button>
+                  <button className="ghost-inline" onClick={() => handleTunnelAction('stop')} disabled={!tunnelStatus?.running || tunnelAction !== null}>Stop</button>
+                  <button className="ghost-inline" onClick={() => copyToClipboard(webhookUrl, 'copy-url')} disabled={!webhookUrl || tradingViewActionState !== null}>{tradingViewActionState === 'copy-url' ? 'Copying...' : 'Copy URL'}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 3: Payload Builder */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className="step-badge">3</span><div><h2>Build Payload</h2><p>Generate the Nubra JSON alert body for TradingView.</p></div></div>
+            <div className="sb-card">
+              <div className="sb-card-head">
+                <div><span className="sb-card-kicker">Payload Builder</span><h3>Alert JSON Generator</h3></div>
+                <div className="mode-toggle">
+                  <button className={tradingViewMode === 'line' ? 'indicator-box active' : 'indicator-box'} onClick={() => setTradingViewMode('line')}>Line Alert</button>
+                  <button className={tradingViewMode === 'strategy' ? 'indicator-box active' : 'indicator-box'} onClick={() => setTradingViewMode('strategy')}>Strategy Alert</button>
+                </div>
+              </div>
+              <div className="tradingview-form-grid">
+                <div><label className="field-group-label">Strategy Name</label><input className="field-input" value={tradingViewStrategyName} onChange={(e) => setTradingViewStrategyName(e.target.value)} /></div>
+                <div><label className="field-group-label">Symbol</label><input className="field-input" value={tradingViewSymbol} onChange={(e) => setTradingViewSymbol(e.target.value.toUpperCase())} /></div>
+                <div><label className="field-group-label">Exchange</label><select className="field-select" value={tradingViewExchange} onChange={(e) => setTradingViewExchange(e.target.value)}><option value="NSE">NSE</option><option value="BSE">BSE</option></select></div>
+                <div><label className="field-group-label">Action</label><select className="field-select" value={tradingViewOrderAction} onChange={(e) => setTradingViewOrderAction(e.target.value as TradingViewAction)}><option value="BUY">BUY</option><option value="SELL">SELL</option></select></div>
+                <div><label className="field-group-label">Quantity</label><input className="field-input" value={tradingViewQuantity} onChange={(e) => setTradingViewQuantity(e.target.value.replace(/\D/g,'') || '1')} /></div>
+                <div><label className="field-group-label">Tag</label><input className="field-input" value={tradingViewTag} onChange={(e) => setTradingViewTag(e.target.value)} placeholder="swing-1 or 2026-04-15" /></div>
+              </div>
+              <div className="webhook-builder-actions">
+                <button className="primary-btn" style={{ fontSize: 13, padding: '10px 18px' }} onClick={handleTradingViewTest} disabled={!tradingViewStatus?.configured || !webhookExecutionReady || tradingViewActionState !== null}>{tradingViewActionState === 'test' ? 'Sending...' : 'Send Test Payload'}</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 4: Copy JSONs */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span><div><h2>Copy and Test</h2><p>Copy the payload, then send a test before going live.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Strategy JSON</span><h3>Nubra Strategy Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <pre className="code-block webhook-code-block">{tradingViewStrategyJson}</pre>
+              </div>
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Line Alert JSON</span><h3>Nubra Manual Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <pre className="code-block webhook-code-block">{tradingViewLineJson}</pre>
+              </div>
+            </div>
+          </div>
+
+          {/* Step 5: Monitor */}
+          <div className="webhook-step-section">
+            <div className="step-heading"><span className={executionEnabled ? 'step-badge done' : 'step-badge'}>5</span><div><h2>Go Live and Monitor</h2><p>Watch webhook orders and event history below.</p></div></div>
+            <div className="tradingview-grid">
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Order History</span><h3>Webhook Orders</h3></div><span className="pill-v2">{filteredOrderHistory.length} orders</span></div>
+                {filteredOrderHistory.length === 0 ? <div className="table-empty">No accepted webhook orders yet.</div> : (
+                  <div className="table-shell">
+                    <div className="table-row table-head webhook-order-grid" style={{ gridTemplateColumns: '1.5fr 1.5fr 1fr 1.5fr 1fr' }}><span>Time</span><span>Trade</span><span>Qty</span><span>Prices</span><span>P&L</span></div>
+                    {filteredOrderHistory.map((entry) => (
+                      <div key={`${entry.time_ist}-${entry.order_id ?? entry.instrument ?? 'trade'}`} className="table-row webhook-order-grid" style={{ gridTemplateColumns: '1.5fr 1.5fr 1fr 1.5fr 1fr' }}>
+                        <span><strong>{entry.time_ist}</strong><small>{entry.source === 'test' ? 'Test' : 'Live'}</small></span>
+                        <span><strong>{entry.instrument ?? '-'}</strong><small>{entry.action ?? '-'} | {entry.strategy ?? 'No strategy'}</small></span>
+                        <span><strong>{entry.filled_qty ?? entry.placed_qty ?? entry.requested_qty ?? '-'}</strong><small>{entry.order_status ?? 'Pending'}</small></span>
+                        <span><strong>Fill {entry.avg_filled_price?.toFixed(2) ?? 'Pending'}</strong><small>LTP {entry.current_price?.toFixed(2) ?? 'Pending'}</small></span>
+                        <span><strong>{entry.pnl === null ? 'Pending' : entry.pnl.toFixed(2)}</strong></span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="sb-card">
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Event Log</span><h3>Webhook Activity</h3></div>
+                  <div className="mode-toggle">
+                    <button className={historySourceFilter === 'all' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('all')}>All</button>
+                    <button className={historySourceFilter === 'test' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('test')}>Test</button>
+                    <button className={historySourceFilter === 'live' ? 'indicator-box active' : 'indicator-box'} onClick={() => setHistorySourceFilter('live')}>Live</button>
+                  </div>
+                </div>
+                {filteredHistory.length === 0 ? <div className="table-empty">No webhook history yet.</div> : (
+                  <div className="webhook-log-list">
+                    {filteredHistory.map((entry) => (
+                      <div key={entry.id} className={`webhook-log-item ${entry.status === 'accepted' ? 'success' : entry.status === 'error' || entry.status === 'blocked' ? 'error' : ''}`}>
+                        <div className="webhook-log-head"><strong>{entry.message}</strong><span>{entry.time_ist}</span></div>
+                        <div className="history-meta-row">
+                          <span className={`pill-v2 ${entry.status === 'accepted' ? 'pill-success' : entry.status === 'error' || entry.status === 'blocked' ? 'pill-danger' : ''}`}>{entry.status}</span>
+                          <span className="pill-v2">{entry.source === 'test' ? 'Test' : 'Live'}</span>
+                          {entry.instrument && <span className="pill-v2 pill-accent">{entry.instrument}</span>}
+                          {entry.action && <span className="pill-v2">{entry.action}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {tradingViewError ? <div className="err-banner">{tradingViewError}</div> : null}
+          {tradingViewMessage ? <div className="msg-banner">{tradingViewMessage}</div> : null}
+          <PostLoginFooter />
+        </main>
+      </div>
+    )
+  }
+
+  if (view === 'scalper') {
+    const activeOptionPair = scalperOptionPair
+    const lotSize = activeOptionPair?.lot_size ?? 1
+    const tickSize = activeOptionPair?.tick_size ?? 1
+    const callLots = sanitizePositiveInteger(scalperCallLots)
+    const putLots = sanitizePositiveInteger(scalperPutLots)
+    const callEstimatedValue = (callMeta?.last_price ?? 0) * lotSize * callLots
+    const putEstimatedValue = (putMeta?.last_price ?? 0) * lotSize * putLots
+    const callTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.call_ref_id || scalperValidating || !scalperExecutionSession
+    const putTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.put_ref_id || scalperValidating || !scalperExecutionSession
+    const scalperExecutionLabel = scalperExecutionSession?.environment ?? scalperExecutionEnvironment
 
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Scalper')}
-
-          <section className="dashboard-header no-code-header">
-            <div>
-              <button type="button" className="back-link" onClick={() => setView('dashboard')}>
-                {'< Back to Dashboard'}
-              </button>
-              <h1>Scalper</h1>
-              <p>
-                Live three-panel workspace — underlying on the left, matched call / put charts on the right.
-                Charts tick in real time via Nubra market data.
-              </p>
+      <div className="subview-shell">
+        {renderDashboardNav('Scalper')}
+        <main className="subview-main scalper-main">
+          <div className="scalper-page-head">
+            <div className="scalper-page-crumbs">
+              <button className="ghost-inline" onClick={() => setView('dashboard')}>Back to Dashboard</button>
+              <span className="builder-crumb-sep">/</span>
+              <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>Scalper</span>
             </div>
-            <div className="dashboard-header-pills">
-              <span className="pill">{session?.environment ?? 'UAT'}</span>
-              <span className="pill">{scalperUnderlying}</span>
-              <span className="pill pill-dark">{scalperInterval}</span>
-              <span className="pill" style={{ color: scalperFeedTone }}>
-                {scalperValidating ? '◌ Checking' : liveConnected ? '● Live' : liveError ? '● Feed Error' : '○ Connecting'}
+            <div className="scalper-page-pills">
+              {renderExecutionEnvironmentToggle(scalperExecutionEnvironment, handleScalperExecutionEnvironmentSelect)}
+              <span className="pill-v2">{scalperUnderlying}</span>
+              <span className="pill-v2">{scalperInterval}</span>
+              <span className="pill-v2" style={{ color: scalperFeedTone }}>
+                {scalperValidating ? 'Checking' : liveConnected ? 'Live' : liveError ? 'Feed Error' : 'Connecting'}
               </span>
             </div>
-          </section>
+          </div>
 
           {session?.is_demo ? (
-            <section className="dashboard-info-card">
-              <div>
-                <strong>Real session required</strong>
-                <p>Live charts stream Nubra market data. Open a real UAT or PROD session to activate the scalper workspace.</p>
-              </div>
-            </section>
+            <div className="msg-banner">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Real session required</strong>
+              Live charts stream Nubra market data. Open a real UAT or PROD session to activate the scalper workspace.
+            </div>
           ) : (
             <>
+              {scalperSnapshotError && !liveConnected ? <div className="err-banner">{scalperSnapshotError}</div> : null}
+              {scalperSnapshotNotice && !liveConnected ? <div className="msg-banner">{scalperSnapshotNotice}</div> : null}
+
               <section className="scalper-terminal">
                 <div className="scalper-toolbar">
                   <div className="scalper-toolbar-group">
                     <label className="scalper-field">
                       <span>Underlying</span>
-                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value as (typeof scalperUnderlyings)[number])}>
-                        {scalperUnderlyings.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
+                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value)}>
+                        {(scalperUnderlyings as readonly string[]).includes(scalperUnderlying)
+                          ? scalperUnderlyings.map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))
+                          : [...scalperUnderlyings, scalperUnderlying].map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))}
                       </select>
                     </label>
                     <label className="scalper-field">
@@ -2689,12 +2593,28 @@ export default function App() {
                       </select>
                     </label>
                     <label className="scalper-field">
-                      <span>Strike</span>
-                      <input
-                        value={scalperStrikePrice}
-                        onChange={(event) => setScalperStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
-                        placeholder="24300"
-                      />
+                      <span>CE Strike</span>
+                      <div className="scalper-step-input">
+                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <input
+                          value={scalperCeStrikePrice}
+                          onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          placeholder="24300"
+                        />
+                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                      </div>
+                    </label>
+                    <label className="scalper-field">
+                      <span>PE Strike</span>
+                      <div className="scalper-step-input">
+                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <input
+                          value={scalperPeStrikePrice}
+                          onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          placeholder="24300"
+                        />
+                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                      </div>
                     </label>
                     <label className="scalper-field">
                       <span>Expiry</span>
@@ -2709,12 +2629,12 @@ export default function App() {
                   <div className="scalper-toolbar-side">
                     <div className="scalper-status-stack">
                       <span className="scalper-status-pill" style={{ color: scalperFeedTone }}>{scalperFeedLabel}</span>
-                      <span className="scalper-status-pill">{optionPair?.expiry ?? 'No expiry'}</span>
-                      <span className="scalper-status-pill">Lot {optionPair?.lot_size ?? '--'}</span>
+                      <span className="scalper-status-pill">{formatExpiryBadge(activeOptionPair?.expiry)}</span>
+                      <span className="scalper-status-pill">Lot {activeOptionPair?.lot_size ?? '--'}</span>
                     </div>
                     <button
                       type="button"
-                      className="primary-button"
+                      className="primary-btn"
                       disabled={scalperValidating}
                       onClick={() => { void validateScalperSessionAndReconnect() }}
                     >
@@ -2738,7 +2658,13 @@ export default function App() {
                     lastPrice={callMeta?.last_price ?? null}
                     interval={callMeta?.interval ?? scalperInterval}
                     exchange={callMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={callFallbackCandles}
+                    overlays={indicatorOverlaysCall.overlays}
+                    signals={indicatorOverlaysCall.signals}
+                    hasData={callHasChartData}
+                    emptyLabel={scalperChartEmptyLabel}
+                    height={scalperChartHeight}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                   <ScalperLiveChart
@@ -2749,7 +2675,13 @@ export default function App() {
                     lastPrice={underlyingMeta?.last_price ?? null}
                     interval={underlyingMeta?.interval ?? scalperInterval}
                     exchange={underlyingMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={underlyingFallbackCandles}
+                    overlays={indicatorOverlaysUnderlying.overlays}
+                    signals={indicatorOverlaysUnderlying.signals}
+                    hasData={underlyingHasChartData}
+                    emptyLabel={scalperChartEmptyLabel}
+                    height={scalperChartHeight}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                   <ScalperLiveChart
@@ -2760,325 +2692,725 @@ export default function App() {
                     lastPrice={putMeta?.last_price ?? null}
                     interval={putMeta?.interval ?? scalperInterval}
                     exchange={putMeta?.exchange ?? 'NSE'}
-                    height={430}
+                    fallbackCandles={putFallbackCandles}
+                    overlays={indicatorOverlaysPut.overlays}
+                    signals={indicatorOverlaysPut.signals}
+                    hasData={putHasChartData}
+                    emptyLabel={scalperChartEmptyLabel}
+                    height={scalperChartHeight}
+                    theme={theme}
                     onSeriesReady={registerPanel}
                   />
                 </section>
 
+                <section className="scalper-trade-strip">
+                  <article className="scalper-trade-panel">
+                    <div className="scalper-trade-panel-head">
+                      <span className="summary-label">Call execution</span>
+                      <strong>{activeOptionPair ? `${activeOptionPair.ce_strike_price} CE` : 'Resolving...'}</strong>
+                    </div>
+                    <div className="scalper-trade-inputs">
+                      <label className="scalper-field compact">
+                        <span>Strike</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                          <input value={scalperCeStrikePrice} onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        </div>
+                      </label>
+                      <label className="scalper-field compact">
+                        <span>Lots</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperCallLots(String(Math.max(1, callLots - 1)))}>-</button>
+                          <input value={scalperCallLots} onChange={(event) => setScalperCallLots(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperCallLots(String(callLots + 1))}>+</button>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="scalper-trade-buttons">
+                      <button
+                        type="button"
+                        className="scalper-trade-button buy"
+                        disabled={callTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('CE', 'ORDER_SIDE_BUY') }}
+                      >
+                        <strong>Buy Call</strong>
+                        <span>Req. {formatPrice(callEstimatedValue)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="scalper-trade-button sell"
+                        disabled={callTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('CE', 'ORDER_SIDE_SELL') }}
+                      >
+                        <strong>Sell Call</strong>
+                        <span>Req. {formatPrice(callEstimatedValue)}</span>
+                      </button>
+                    </div>
+                  </article>
+
+                  <article className="scalper-trade-summary">
+                    <span className="summary-label">Execution summary</span>
+                    <strong>{scalperExecutionLabel} scalper</strong>
+                    <div className="scalper-trade-summary-grid">
+                      <div><span>Lot size</span><strong>{lotSize || '--'}</strong></div>
+                      <div><span>Tick</span><strong>{tickSize || '--'}</strong></div>
+                      <div><span>Call LTP</span><strong>{formatPrice(callMeta?.last_price)}</strong></div>
+                      <div><span>Put LTP</span><strong>{formatPrice(putMeta?.last_price)}</strong></div>
+                    </div>
+                    {scalperTradeError ? <div className="err-banner">{scalperTradeError}</div> : null}
+                    {scalperTradeMessage ? <div className="msg-banner">{scalperTradeMessage}</div> : null}
+                  </article>
+
+                  <article className="scalper-trade-panel">
+                    <div className="scalper-trade-panel-head">
+                      <span className="summary-label">Put execution</span>
+                      <strong>{activeOptionPair ? `${activeOptionPair.pe_strike_price} PE` : 'Resolving...'}</strong>
+                    </div>
+                    <div className="scalper-trade-inputs">
+                      <label className="scalper-field compact">
+                        <span>Strike</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                          <input value={scalperPeStrikePrice} onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        </div>
+                      </label>
+                      <label className="scalper-field compact">
+                        <span>Lots</span>
+                        <div className="scalper-step-input">
+                          <button type="button" onClick={() => setScalperPutLots(String(Math.max(1, putLots - 1)))}>-</button>
+                          <input value={scalperPutLots} onChange={(event) => setScalperPutLots(event.target.value.replace(/[^\d]/g, ''))} />
+                          <button type="button" onClick={() => setScalperPutLots(String(putLots + 1))}>+</button>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="scalper-trade-buttons">
+                      <button
+                        type="button"
+                        className="scalper-trade-button buy"
+                        disabled={putTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('PE', 'ORDER_SIDE_BUY') }}
+                      >
+                        <strong>Buy Put</strong>
+                        <span>Req. {formatPrice(putEstimatedValue)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="scalper-trade-button sell"
+                        disabled={putTradingDisabled || scalperTradeAction !== null}
+                        onClick={() => { void submitScalperOrder('PE', 'ORDER_SIDE_SELL') }}
+                      >
+                        <strong>Sell Put</strong>
+                        <span>Req. {formatPrice(putEstimatedValue)}</span>
+                      </button>
+                    </div>
+                  </article>
+                </section>
+
                 <div className="scalper-terminal-footer">
-                  <div className="scalper-terminal-note">
-                    {optionPair
-                      ? `${optionPair.call_display_name} / ${optionPair.put_display_name}`
-                      : 'Resolving option pair...'}
-                  </div>
-                  <div className="scalper-terminal-note">
-                    {liveError
-                      ? liveError
-                      : liveStatus || 'Live websocket updates are active for the current candle. REST is only used for periodic reconcile.'}
-                  </div>
+                  <span className="scalper-terminal-note">
+                    {activeOptionPair ? `${activeOptionPair.call_display_name} / ${activeOptionPair.put_display_name}` : 'Resolving option pair...'}
+                  </span>
+                  <span>{liveError || liveStatus || 'Waiting for live feed.'}</span>
                 </div>
               </section>
+
+              <section className="scalper-screener">
+                <div className="scalper-tool-switch">
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'delta-neutral' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('delta-neutral')}
+                  >
+                    Delta Neutral
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'volume-breakout' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('volume-breakout')}
+                  >
+                    Volume Breakout Finder
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'indicator-builder' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('indicator-builder')}
+                  >
+                    Indicator Builder
+                    {indicatorHook.indicators.filter((indicator) => indicator.enabled).length > 0 && (
+                      <span className="ind-count-badge" style={{ marginLeft: 6 }}>
+                        {indicatorHook.indicators.filter((indicator) => indicator.enabled).length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={activeScalperTool === 'automate' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                    onClick={() => setActiveScalperTool('automate')}
+                    style={automateEnabled ? { color: '#ef4444', fontWeight: 700 } : undefined}
+                  >
+                    Automate
+                    {automateEnabled && (
+                      <span className="ind-count-badge" style={{ marginLeft: 6, background: '#ef4444' }}>ON</span>
+                    )}
+                  </button>
+                </div>
+
+                {activeScalperTool === 'delta-neutral' ? (
+                  <>
+                    <div className="scalper-screener-head">
+                      <div>
+                        <span className="summary-label">Delta Neutral Pairs</span>
+                        <h2>Top 5 CE / PE combinations</h2>
+                        <p>Click a ranked pair to load separate call and put strikes into the scalper. Rankings use Nubra CE and PE delta values, with snapshot fallback when live data is unavailable.</p>
+                      </div>
+                      <div className="scalper-screener-meta">
+                        <span className="scalper-status-pill">{deltaNeutralLoading ? 'Loading pairs...' : `${deltaNeutralPairs.length} pairs`}</span>
+                        <span className="scalper-status-pill">{formatExpiryBadge(scalperExpiry)}</span>
+                      </div>
+                    </div>
+
+                    {deltaNeutralMessage ? <div className="msg-banner">{deltaNeutralMessage}</div> : null}
+
+                    <div className="scalper-pair-grid">
+                      {deltaNeutralPairs.length === 0 ? (
+                        <div className="table-empty">No delta-neutral pairs available yet.</div>
+                      ) : (
+                        deltaNeutralPairs.map((pair) => {
+                          const isActive =
+                            pair.ce_strike_price === Number(scalperCeStrikePrice) &&
+                            pair.pe_strike_price === Number(scalperPeStrikePrice) &&
+                            (pair.expiry ?? '') === (normalizedScalperExpiry ?? '')
+
+                          return (
+                            <button
+                              key={`${pair.rank}-${pair.ce_strike_price}-${pair.pe_strike_price}`}
+                              type="button"
+                              className={isActive ? 'scalper-pair-card is-active' : 'scalper-pair-card'}
+                              onClick={() => {
+                                setScalperCeStrikePrice(String(pair.ce_strike_price))
+                                setScalperPeStrikePrice(String(pair.pe_strike_price))
+                                setScalperExpiry(formatExpiryInputValue(pair.expiry))
+                                setScalperReconnectNonce((value) => value + 1)
+                              }}
+                            >
+                              <div className="scalper-pair-rank">#{pair.rank}</div>
+                              <div className="scalper-pair-strikes">
+                                <strong>{pair.ce_strike_price} CE</strong>
+                                <strong>{pair.pe_strike_price} PE</strong>
+                              </div>
+                              <div className="scalper-pair-score">
+                                <span>Neutrality</span>
+                                <strong>{pair.neutrality_score.toFixed(1)}</strong>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>Width {pair.width_points}</span>
+                                <span>Spot {formatPrice(pair.spot_price)}</span>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>CE Delta {pair.call_delta != null ? pair.call_delta.toFixed(2) : '--'}</span>
+                                <span>PE Delta {pair.put_delta != null ? pair.put_delta.toFixed(2) : '--'}</span>
+                              </div>
+                              <div className="scalper-pair-metrics">
+                                <span>Net Delta {pair.net_delta != null ? pair.net_delta.toFixed(2) : '--'}</span>
+                                <span>{pair.expiry?.trim() || 'Nearest expiry'}</span>
+                              </div>
+                              <div className="scalper-pair-bar">
+                                <div className="scalper-pair-bar-fill" style={{ width: `${Math.max(12, Math.min(100, pair.neutrality_score))}%` }} />
+                              </div>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </>
+                ) : activeScalperTool === 'volume-breakout' ? (
+                  <>
+                    <div className="scalper-screener-head">
+                      <div>
+                        <span className="summary-label">Volume Breakout Finder</span>
+                        <h2>Top option-tradable breakout underlyings</h2>
+                        <p>Compare the current {scalperInterval} candle volume with the average of all {scalperInterval} candles from the previous {scalperVolumeBreakoutLookbackDays} trading days. After market hours and on weekends, the finder falls back to the latest historical session snapshot.</p>
+                      </div>
+                      <div className="scalper-screener-meta">
+                        <span className="scalper-status-pill">{scalperVolumeBreakoutLoading ? 'Scanning all stocks...' : `${scalperVolumeBreakoutRows.length} candidates`}</span>
+                        <span className="scalper-status-pill">{scalperVolumeBreakoutLookbackDays}D lookback</span>
+                      </div>
+                    </div>
+
+                    <div className="scalper-breakout-controls">
+                      {[3, 5, 10, 20].map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          className={scalperVolumeBreakoutLookbackDays === days ? 'scalper-lookback-button is-active' : 'scalper-lookback-button'}
+                          onClick={() => setScalperVolumeBreakoutLookbackDays(days as 3 | 5 | 10 | 20)}
+                        >
+                          {days}D
+                        </button>
+                      ))}
+                    </div>
+
+                    {scalperVolumeBreakoutMessage ? <div className="msg-banner">{scalperVolumeBreakoutMessage}</div> : null}
+
+                    <div className="scalper-breakout-grid-wrap">
+                      <div className="scalper-breakout-grid">
+                        {scalperVolumeBreakoutRows.length === 0 ? (
+                          <div className="table-empty">No volume breakout candidates are available for this trading-day baseline yet.</div>
+                        ) : (
+                          scalperVolumeBreakoutRows.map((row) => {
+                            const isActive = row.underlying === scalperUnderlying
+                            return (
+                              <button
+                                key={`${row.rank}-${row.underlying}`}
+                                type="button"
+                                className={isActive ? 'scalper-breakout-card is-active' : 'scalper-breakout-card'}
+                                onClick={() => {
+                                  const desiredExpiry = formatExpiryInputValue(row.nearest_expiry)
+                                  if (desiredExpiry) {
+                                    pendingScalperExpiry.current = desiredExpiry
+                                  }
+                                  setScalperUnderlying(row.underlying)
+                                  if (row.atm_strike != null) {
+                                    const strike = String(row.atm_strike)
+                                    setScalperCeStrikePrice(strike)
+                                    setScalperPeStrikePrice(strike)
+                                  }
+                                  setActiveScalperTool('delta-neutral')
+                                  setScalperReconnectNonce((value) => value + 1)
+                                }}
+                              >
+                                <div className="scalper-breakout-rank">#{row.rank}</div>
+                                <div className="scalper-breakout-header">
+                                  <div>
+                                    <strong>{row.underlying}</strong>
+                                    <span>{row.display_name}</span>
+                                  </div>
+                                  <span className="scalper-breakout-status">{row.status_label}</span>
+                                </div>
+                                <div className="scalper-breakout-price-row">
+                                  <strong>{formatPrice(row.last_price)}</strong>
+                                  <span>{row.price_change_pct == null ? '--' : `${row.price_change_pct >= 0 ? '+' : ''}${row.price_change_pct.toFixed(2)}%`}</span>
+                                </div>
+                                <div className="scalper-breakout-metrics">
+                                  <span>Vol ratio</span>
+                                  <strong>{row.volume_ratio.toFixed(2)}x</strong>
+                                </div>
+                                <div className="scalper-breakout-metrics">
+                                  <span>Current</span>
+                                  <strong>{formatCompactVolume(row.current_volume)}</strong>
+                                </div>
+                                <div className="scalper-breakout-metrics">
+                                  <span>Avg candle ({scalperVolumeBreakoutLookbackDays}D)</span>
+                                  <strong>{formatCompactVolume(row.average_volume)}</strong>
+                                </div>
+                                <div className="scalper-breakout-metrics">
+                                  <span>Nearest expiry</span>
+                                  <strong>{formatExpiryBadge(row.nearest_expiry)}</strong>
+                                </div>
+                                <div className="scalper-breakout-metrics">
+                                  <span>ATM strike</span>
+                                  <strong>{row.atm_strike == null ? '--' : row.atm_strike}</strong>
+                                </div>
+                                <div className="scalper-breakout-bar">
+                                  <div className="scalper-breakout-bar-fill" style={{ width: `${Math.max(14, Math.min(100, row.breakout_strength))}%` }} />
+                                </div>
+                              </button>
+                            )
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : activeScalperTool === 'indicator-builder' ? (
+                  <IndicatorBuilder
+                    indicators={indicatorHook.indicators}
+                    presets={indicatorHook.presets}
+                    onAddFromPreset={indicatorHook.addFromPreset}
+                    onToggle={indicatorHook.toggle}
+                    onRemove={indicatorHook.remove}
+                    onRename={indicatorHook.rename}
+                    onUpdate={indicatorHook.update}
+                    theme={theme}
+                  />
+                ) : (
+                  <AutomatePanel
+                    enabled={automateEnabled}
+                    onToggle={setAutomateEnabled}
+                    config={automateConfig}
+                    onConfigChange={(next) => setAutomateConfig((prev) => ({ ...prev, ...next }))}
+                    hasSignals={automationHasSignals}
+                    position={automation.position}
+                    tradeCount={automation.tradeCount}
+                    log={automation.log}
+                    onClearLog={automation.clearLog}
+                    onResetPosition={automation.resetPosition}
+                    disabled={!session || !!session.is_demo}
+                  />
+                )}
+              </section>
+
+              <PostLoginFooter />
             </>
           )}
-        </section>
-      </main>
+        </main>
+      </div>
+    )
+  }
+
+  if (view === 'landing') {
+    return (
+      <div className="auth-scene landing-scene">
+        <div className="auth-bg">
+          <div className="grid-pattern" />
+          <div className="ambient a1" />
+          <div className="ambient a2" />
+        </div>
+
+        <header className="auth-chrome">
+          <div className="logo">
+            <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={34} height={34} />
+            <span className="wm" style={{ fontSize: 16 }}>NubraOSS</span>
+          </div>
+          <div className="chrome-right">
+            <span className="chrome-meta"><span className="live-dot" />All systems nominal</span>
+            <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+              <span className={`tt-track ${theme}`}>
+                <span className="tt-thumb">
+                  {theme === 'dark'
+                    ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z" /></svg>
+                    : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4} /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4" /></svg>
+                  }
+                </span>
+              </span>
+            </button>
+          </div>
+        </header>
+
+        <main className="landing-stage">
+          <div className="landing-halo" aria-hidden />
+          <div className="eyebrow landing-eyebrow"><span className="eyebrow-dot" />Beta version</div>
+          <h1 className="landing-title">NubraOSS</h1>
+          <p className="landing-sub">
+            The professional operating system for algorithmic execution.
+            <br />
+            Engineered for precision, built for scale.
+          </p>
+          <div className="landing-cta">
+            <button className="primary-btn landing-btn" onClick={() => resetAuthFlow('login')}>
+              <span>Initialize System</span>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+            <div className="landing-pills">
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 4.5-3.5 8-8 9-4.5-1-8-4.5-8-9V6l8-3z" /></svg>
+                Secure
+              </span>
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z" /></svg>
+                Low latency
+              </span>
+              <span className="lpill">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x={3} y={3} width={7} height={7} rx={1} /><rect x={14} y={3} width={7} height={7} rx={1} /><rect x={3} y={14} width={7} height={7} rx={1} /><rect x={14} y={14} width={7} height={7} rx={1} /></svg>
+                No-code
+              </span>
+            </div>
+          </div>
+        </main>
+
+        <footer className="auth-foot">
+          <span>&copy; 2026 NubraOSS</span>
+        </footer>
+      </div>
     )
   }
 
   if (view === 'dashboard') {
+    const moduleCards = [
+      { key: 'no-code' as const,            title: 'No Code',            sub: 'Visual strategy authoring',    accent: 'rgb(124,207,94)',  glow: '124,207,94',  icon: 'backtest' },
+      { key: 'volume-breakout' as const,     title: 'Volume Breakout',    sub: 'Market-wide breakout scanner', accent: 'rgb(120,201,255)', glow: '120,201,255', icon: 'platform' },
+      { key: 'tradingview-webhook' as const, title: 'Webhook Strategies', sub: 'Signal-driven automation',     accent: 'rgb(177,102,16)',  glow: '177,102,16',  icon: 'webhook'  },
+      { key: 'scalper' as const,             title: 'Scalper',            sub: 'Intraday live charts',          accent: 'rgb(149,220,122)', glow: '149,220,122', icon: 'chain'    },
+      { key: 'backtest-lab' as const,         title: 'Backtest Lab',       sub: 'Historical strategy testing',   accent: 'rgb(0,118,196)',   glow: '0,118,196',   icon: 'book'     },
+      { key: null,                           title: 'Risk & Tools',       sub: 'Exposure & position sizing',   accent: 'rgb(241,66,66)',   glow: '241,66,66',   icon: 'risk'     },
+    ]
+    const iconPaths: Record<string, React.ReactNode> = {
+      backtest: <><path d="M3 17l4-6 4 3 6-9"/><path d="M3 21h18"/></>,
+      platform: <><rect x={3} y={4} width={18} height={13} rx={1.5}/><path d="M3 14h18M8 20h8M12 17v3"/></>,
+      webhook:  <><circle cx={7} cy={7} r={2.5}/><circle cx={17} cy={17} r={2.5}/><circle cx={17} cy={7} r={2.5}/><path d="M9 8.5L15 15.5M15 7h-6"/></>,
+      book:     <><path d="M4 5v15a1 1 0 001 1h15V6a2 2 0 00-2-2H6a2 2 0 00-2 1z"/><path d="M8 9h8M8 13h8M8 17h5"/></>,
+      chain:    <><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/><path d="M12 4v16"/></>,
+      risk:     <><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/><path d="M12 9v4M12 16v.01"/></>,
+    }
     return (
-      <main className="dashboard-shell">
-        <section className="dashboard-panel">
-          {renderDashboardNav('Dashboard')}
-
-          <section className="dashboard-header">
-            <div>
-              <h1>Dashboard</h1>
-              <p>
-                Logged in as {session?.user_name ?? 'Nubra User'} on {session?.environment ?? 'PROD'}.
-              </p>
-              {isSessionChecking ? <p>Checking session status...</p> : null}
+      <div className="dash">
+        {renderDashboardNav('Dashboard')}
+        <main className="dash-main">
+          <section className="hero">
+            <div className="hero-l">
+              <div className="eyebrow"><span className="eyebrow-dot"/>SESSION / {session?.environment ?? 'PROD'}</div>
+              <h1 className="hero-title">{isSessionChecking ? 'Checking session...' : `Welcome, ${clientIdentifier}.`}</h1>
+              <p className="hero-sub">Your NubraOSS workspace is live on <em>{session?.environment ?? 'PROD'}</em>. Launch any module below to begin executing strategies.</p>
             </div>
           </section>
 
-          <section className="card-grid">
-            {dashboardCards.map((card) => (
-              <article
-                key={card.title}
-                className={card.key ? 'dashboard-module-card is-clickable' : 'dashboard-module-card'}
-                onClick={card.key ? () => handleDashboardCardOpen(card.key) : undefined}
-                role={card.key ? 'button' : undefined}
-                tabIndex={card.key ? 0 : undefined}
-                onKeyDown={
-                  card.key
-                    ? (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          handleDashboardCardOpen(card.key)
-                        }
-                      }
-                    : undefined
-                }
-              >
-                <div className={`module-badge ${card.badgeClass}`}>{card.badge}</div>
-                <h2>{card.title}</h2>
-                <p>{card.description}</p>
-                <span className="module-footer">{card.footer}</span>
-              </article>
-            ))}
-          </section>
-
-          <section className="dashboard-info-card">
-            <div>
-              <strong>Getting Started</strong>
-              <p>
-                This is the first dashboard shell. Each card is a placeholder entry point for the
-                Nubra-native modules we will build next.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => window.open('https://docs.nubra.io', '_blank', 'noopener,noreferrer')}
-            >
-              View Documentation
-            </button>
-          </section>
-
-          <section className="dashboard-module-card tunnel-card">
-            <div className="tunnel-card-header">
-              <div>
-                <h2>Public Webhook URL</h2>
-                <p>Start a built-in Cloudflare tunnel so TradingView can reach your local NubraOSS backend.</p>
-              </div>
-              <div className="tunnel-actions">
+          <section className="modules">
+            <div className="section-head"><h2>Operating modules</h2><span className="section-meta">Six surfaces / unified runtime</span></div>
+            <div className="module-grid">
+              {moduleCards.map((mod, index) => (
                 <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => handleTunnelAction('start')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
+                  key={mod.title}
+                  className="module-card"
+                  style={{ '--accent': mod.accent, '--glow': mod.glow } as React.CSSProperties}
+                  onClick={mod.key ? () => handleDashboardCardOpen(mod.key!) : undefined}
+                  disabled={!mod.key}
                 >
-                  {tunnelAction === 'start' ? 'Starting...' : 'Generate Public Webhook URL'}
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('refresh')}
-                  disabled={!session || Boolean(session.is_demo) || tunnelAction !== null}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTunnelAction('stop')}
-                  disabled={!tunnelStatus?.running || tunnelAction !== null}
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-
-            <div className="tunnel-grid">
-              <div className="tunnel-panel">
-                <span className="summary-label">Webhook URL</span>
-                <strong className="tunnel-url">
-                  {tunnelStatus?.public_url ?? 'Not generated yet'}
-                </strong>
-                <small>TradingView target: {(tunnelStatus?.public_url ?? 'Generate URL') + '/api/webhooks/tradingview'}</small>
-              </div>
-              <div className="tunnel-panel">
-                <span className="summary-label">Target</span>
-                <strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong>
-                <small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small>
-              </div>
-            </div>
-
-            {tunnelStatus?.last_error ? <div className="error-banner">{tunnelStatus.last_error}</div> : null}
-
-            <div className="tunnel-log-card">
-              <span className="summary-label">Tunnel Logs</span>
-              {(tunnelStatus?.logs ?? []).length === 0 ? (
-                <div className="table-empty">No tunnel logs yet.</div>
-              ) : (
-                <div className="tunnel-log-list">
-                  {(tunnelStatus?.logs ?? []).slice(-6).map((line, index) => (
-                    <div key={`${index}-${line}`} className="tunnel-log-line">
-                      {line}
+                  <div className="mc-glow" aria-hidden />
+                  <div className="mc-top">
+                    <div className="mc-icon">
+                      <svg viewBox="0 0 24 24" width={22} height={22} fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round">{iconPaths[mod.icon]}</svg>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <span className="mc-num">0{index + 1}</span>
+                  </div>
+                  <div className="mc-body"><h3 className="mc-title">{mod.title}</h3><p className="mc-sub">{mod.sub}</p></div>
+                  <div className="mc-foot"><span className="mc-cta">{mod.key ? 'Open' : 'Soon'}<svg viewBox="0 0 24 24" width={12} height={12} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+                </button>
+              ))}
             </div>
           </section>
-        </section>
-      </main>
+
+          <section className="rail">
+            <div className="rail-panel">
+              <div className="panel-h"><h3>Public Webhook Tunnel</h3><span className="panel-h-meta">{tunnelStatus?.running ? 'Active' : 'Offline'}</span></div>
+              <div className="tunnel-grid">
+                <div className="tunnel-panel"><span className="summary-label">Webhook URL</span><strong className="tunnel-url">{tunnelStatus?.public_url ?? 'Not generated'}</strong><small>{tunnelStatus?.running ? 'TradingView ready' : 'Start tunnel to get URL'}</small></div>
+                <div className="tunnel-panel"><span className="summary-label">Local Target</span><strong>{tunnelStatus?.target_url ?? 'http://127.0.0.1:8000'}</strong><small>Status: {tunnelStatus?.running ? 'Running' : 'Stopped'}</small></div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <button className="ghost-inline ghost-inline-accent" onClick={() => handleTunnelAction('start')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>{tunnelAction === 'start' ? 'Starting...' : 'Start Tunnel'}</button>
+                <button className="ghost-inline" onClick={() => handleTunnelAction('refresh')} disabled={!session || Boolean(session?.is_demo) || tunnelAction !== null}>Refresh</button>
+                <button className="ghost-inline" onClick={() => handleTunnelAction('stop')} disabled={!tunnelStatus?.running || tunnelAction !== null}>Stop</button>
+              </div>
+              {tunnelStatus?.last_error ? <div className="err-banner" style={{marginTop:10}}>{tunnelStatus.last_error}</div> : null}
+            </div>
+            <div className="rail-panel">
+              <div className="panel-h"><h3>Session</h3><span className="panel-h-meta">Active</span></div>
+              <div className="system">
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Account</span><span className="sys-v">{session?.account_id ?? '--'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">User</span><span className="sys-v">{session?.user_name ?? '--'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Environment</span><span className="sys-v">{session?.environment ?? '--'}</span></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Broker</span><span className="sys-v">{session?.broker ?? '--'}</span></div></div>
+              </div>
+            </div>
+            <div className="rail-panel">
+              <div className="panel-h"><h3>System</h3><span className="panel-h-meta">Live</span></div>
+              <div className="system">
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Tunnel</span><span className="sys-v">{tunnelStatus?.running ? 'Running' : 'Stopped'}</span></div><div className="sys-bar"><span className={`sys-fill ${tunnelStatus?.running ? 'green' : ''}`} style={{width: tunnelStatus?.running ? '100%' : '0%'}} /></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Session</span><span className="sys-v">Active</span></div><div className="sys-bar"><span className="sys-fill green" style={{width:'100%'}} /></div></div>
+                <div className="sys-row"><div className="sys-meta"><span className="sys-k">Public IP</span><span className="sys-v">{publicIp || 'Loading'}</span></div><div className="sys-bar"><span className="sys-fill" style={{width: publicIp ? '100%' : '20%'}} /></div></div>
+              </div>
+            </div>
+          </section>
+          <PostLoginFooter />
+        </main>
+      </div>
     )
   }
 
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Login Screen Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  const isExecutionAuthScreen = view === 'execution-auth' && Boolean(pendingExecutionAuth)
+  const authEnvironment = pendingExecutionAuth?.environment ?? DATA_ENVIRONMENT
+  const authModuleLabel = pendingExecutionAuth?.moduleLabel ?? 'this module'
+  const authTitle = isExecutionAuthScreen ? `Connect ${authEnvironment} for ${authModuleLabel}` : 'Sign in'
+  const authSubtitle = isExecutionAuthScreen
+    ? `Verify ${authEnvironment} once to unlock orders from ${authModuleLabel}.`
+    : 'Access live market data with your Nubra account.'
+  const authBackLabel = isExecutionAuthScreen ? `Back to ${pendingExecutionAuth?.moduleLabel ?? 'module'}` : 'Overview'
+  const authPhoneHint = isExecutionAuthScreen
+    ? 'Use the mobile number linked to the execution account for this environment.'
+    : authMethod === 'otp'
+      ? 'Send an SMS OTP to this number.'
+      : 'Use the authenticator TOTP linked to this Nubra account.'
+
   return (
-    <main className="login-shell">
-      <section className="login-layout">
-        <section className="hero-panel">
-          <div className="hero-surface">
-            <div className="brand-block">
-              <img src={nubraLogo} alt="Nubra" className="brand-logo hero-brand-logo" />
-              <div>
-                <div className="brand-name">NubraOSS</div>
-                <div className="brand-caption">Personal algo trading workspace</div>
-              </div>
-            </div>
+    <div className="auth-scene">
+      <div className="auth-bg">
+        <div className="grid-pattern" />
+        <div className="ambient a1" />
+        <div className="ambient a2" />
+      </div>
 
-            <div className="hero-copy">
-              <h1>
-                Welcome to <span className="hero-accent">NubraOSS</span>
-              </h1>
-              <p>
-                Sign in to your account to access your trading dashboard and manage your no-code
-                and automated trading workflows.
-              </p>
-              <div className="hero-alert">
-                <strong>First Time User?</strong>
-                <span>
-                  This section will later hold onboarding guidance, release notes, and product
-                  help.
-                </span>
-              </div>
-            </div>
+      <header className="auth-chrome">
+        <div className="logo">
+          <img className="mark-img" src={nubraLogo} alt="" aria-hidden width={34} height={34} />
+          <span className="wm" style={{ fontSize: 16 }}>NubraOSS</span>
+        </div>
+        <div className="chrome-right">
+          <button
+            type="button"
+            className="chrome-link"
+            onClick={() => {
+              if (isExecutionAuthScreen && pendingExecutionAuth) {
+                setPendingExecutionAuth(null)
+                resetAuthFields()
+                setView(pendingExecutionAuth.returnView)
+                return
+              }
+              resetAuthFlow('landing')
+            }}
+          >
+            {authBackLabel}
+          </button>
+          <span className="chrome-meta"><span className="live-dot"/>All systems nominal</span>
+          <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+            <span className={`tt-track ${theme}`}>
+              <span className="tt-thumb">
+                {theme === 'dark'
+                  ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/></svg>
+                  : <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round"><circle cx={12} cy={12} r={4}/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>
+                }
+              </span>
+            </span>
+          </button>
+        </div>
+      </header>
+
+      <main className="auth-stage">
+        <div className="glass-panel">
+          <div className="panel-edge" aria-hidden />
+          <div className={`panel-head${isExecutionAuthScreen ? ' panel-head-execution' : ''}`}>
+            <h1 className={`panel-title${isExecutionAuthScreen ? ' panel-title-execution' : ''}`}>{authTitle}</h1>
+            <p className="panel-sub">{authSubtitle}</p>
           </div>
-        </section>
 
-        <section className="login-frame">
-          <div className="login-frame-inner">
-            <div className="title-block">
-              <h1>Sign in to Nubra</h1>
-              <p>{helperText}</p>
+          {step !== 'start' ? (
+            <div className="step-rail">
+              {(['Identity','Verification','MPIN'] as const).map((label, idx) => (
+                <div key={label} className={`step ${idx === currentStep ? 'active' : ''} ${idx < currentStep ? 'done' : ''}`}>
+                  <span className="step-n">0{idx + 1}</span>
+                  <span className="step-l">{label}</span>
+                </div>
+              ))}
             </div>
+          ) : null}
 
-            <div className="demo-banner">
-              <div>
-                <strong>Need a safe test path?</strong>
-                <span>Use demo mode to inspect the latest UI without real credentials.</span>
-              </div>
-              <button type="button" className="secondary-button demo-button" onClick={handleDemoLogin}>
-                Enter Demo
-              </button>
-            </div>
+          <div className="form-body">
+            {step === 'start' && (
+              <form onSubmit={handleStart}>
+                <div className="field-group-v2">
+                  <div className="seg-control" role="tablist" aria-label="Authentication method" style={{ marginBottom: 18 }}>
+                    <span className={`seg-pill ${authMethod === 'totp' ? 'right' : ''}`} />
+                    {([
+                      { key: 'otp' as const, label: 'SMS OTP' },
+                      { key: 'totp' as const, label: 'TOTP' },
+                    ]).map((method) => (
+                      <button
+                        key={method.key}
+                        type="button"
+                        className={`seg-btn ${authMethod === method.key ? 'on' : ''}`}
+                        onClick={() => setAuthMethod(method.key)}
+                      >
+                        {method.label}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="field">
+                    <span className="field-label">Phone number</span>
+                    <div className="field-row">
+                      <span className="prefix">+91</span>
+                      <input autoFocus type="tel" inputMode="numeric" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g,'').slice(0,10))} placeholder="00000 00000" />
+                      <span className="field-hint">{phone.length}/10</span>
+                    </div>
+                    <span className="field-line"/>
+                  </label>
+                  <span className="field-hint center" style={{ marginTop: 10 }}>
+                    {authPhoneHint}
+                  </span>
+                </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || phone.length < 10 ? 'disabled' : ''}`} disabled={activeAction !== null || phone.length < 10} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'phone' ? (authMethod === 'otp' ? 'Sending OTP...' : 'Preparing TOTP login...') : authMethod === 'otp' ? 'Send OTP' : 'Continue with TOTP'}</span>
+                  <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                </button>
+                {!isExecutionAuthScreen ? (
+                  <div style={{ marginTop: 12, textAlign: 'center' }}>
+                    <button type="button" className="link-btn" onClick={handleDemoLogin}>Try demo mode</button>
+                  </div>
+                ) : null}
+              </form>
+            )}
 
-            <div className="env-switch" role="tablist" aria-label="Environment">
-              <button
-                type="button"
-                className={environment === 'PROD' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('PROD')}
-              >
-                PROD
-              </button>
-              <button
-                type="button"
-                className={environment === 'UAT' ? 'env-button active' : 'env-button'}
-                onClick={() => setEnvironment('UAT')}
-              >
-                UAT
-              </button>
-            </div>
-
-            <div className="steps-column">
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={phoneComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>Phone number</h2>
-                    <p>Bootstrap the OTP flow from your Nubra account.</p>
+            {step === 'otp' && (
+              <form onSubmit={handleOtp}>
+                <div className="field-group-v2">
+                  <span className="field-label center">One-time passcode sent to +91 {maskedPhone || 'xxxxx'}</span>
+                  <div className="otp-row">
+                    {otpDigits.map((digit, idx) => (
+                      <input key={idx} ref={(el) => { otpCells.current[idx] = el }} className="otp-cell" value={digit}
+                        onChange={(e) => handleOtpCell(idx, e.target.value.slice(-1))}
+                        onKeyDown={(e) => { if (e.key === 'Backspace' && !digit) otpCells.current[idx-1]?.focus() }}
+                        inputMode="numeric" maxLength={1} />
+                    ))}
                   </div>
                 </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || otp.length < 4 ? 'disabled' : ''}`} disabled={activeAction !== null || otp.length < 4} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'otp' ? 'Verifying...' : 'Verify OTP'}</span>
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setStep('start')}>Back</button>
+              </form>
+            )}
 
-                <form className="step-form step-form-phone" onSubmit={handleStart}>
-                  <input
-                    value={phone}
-                    onChange={(event) => setPhone(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter phone number"
-                    maxLength={15}
-                    required
-                  />
-                  <button
-                    className="primary-button"
-                    disabled={activeAction !== null || phone.length < 10}
-                    type="submit"
-                  >
-                    {activeAction === 'phone' ? 'Sending OTP...' : 'Send OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={otpComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>OTP</h2>
-                    <p>
-                      {maskedPhone
-                        ? `Verify the SMS OTP sent to ${maskedPhone}.`
-                        : 'Enter OTP after the first step completes.'}
-                    </p>
+            {step === 'totp' && (
+              <form onSubmit={handleTotp}>
+                <div className="field-group-v2">
+                  <span className="field-label center">Authenticator code for +91 {maskedPhone || 'xxxxx'}</span>
+                  <div className="otp-row">
+                    {otpDigits.map((digit, idx) => (
+                      <input key={idx} ref={(el) => { otpCells.current[idx] = el }} className="otp-cell" value={digit}
+                        onChange={(e) => handleOtpCell(idx, e.target.value.slice(-1))}
+                        onKeyDown={(e) => { if (e.key === 'Backspace' && !digit) otpCells.current[idx-1]?.focus() }}
+                        inputMode="numeric" maxLength={1} />
+                    ))}
                   </div>
                 </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || otp.length < 4 ? 'disabled' : ''}`} disabled={activeAction !== null || otp.length < 4} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'totp' ? 'Verifying...' : 'Verify TOTP'}</span>
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setStep('start')}>Back</button>
+              </form>
+            )}
 
-                <form className="step-form step-form-inline" onSubmit={handleOtp}>
-                  <input
-                    value={otp}
-                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter OTP"
-                    maxLength={8}
-                    required
-                    disabled={!phoneComplete || otpComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !phoneComplete || otp.length < 4 || otpComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'otp' ? 'Verifying OTP...' : 'Verify OTP'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="step-card">
-                <div className="step-header">
-                  <div className={mpinComplete ? 'status-dot complete' : 'status-dot'} />
-                  <div>
-                    <h2>MPIN</h2>
-                    <p>Confirm the MPIN only after OTP verification succeeds.</p>
+            {(step === 'mpin' || step === 'success') && (
+              <form onSubmit={handleMpin}>
+                <div className="field-group-v2">
+                  <span className="field-label center">Enter your MPIN</span>
+                  <div className="mpin-row">
+                    {[0,1,2,3].map((idx) => (
+                      <input key={idx} ref={(el) => { mpinCells.current[idx] = el }} className="mpin-cell" type="password"
+                        value={mpinDigits[idx] ?? ''}
+                        onChange={(e) => handleMpinCell(idx, e.target.value.slice(-1))}
+                        onKeyDown={(e) => { if (e.key === 'Backspace' && !mpinDigits[idx]) mpinCells.current[idx-1]?.focus() }}
+                        inputMode="numeric" maxLength={1} disabled={mpinComplete} />
+                    ))}
                   </div>
+                  <span className="field-hint center">Encrypted end-to-end</span>
                 </div>
+                <button type="submit" className={`primary-btn ${activeAction !== null || mpin.length < 4 || mpinComplete ? 'disabled' : ''}`} disabled={activeAction !== null || mpin.length < 4 || mpinComplete} style={{ marginTop: 24, width: '100%' }}>
+                  <span>{activeAction === 'mpin' ? 'Entering platform...' : 'Enter Platform'}</span>
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setStep(authMethod === 'totp' ? 'totp' : 'otp')}>Back</button>
+              </form>
+            )}
 
-                <form className="step-form step-form-inline" onSubmit={handleMpin}>
-                  <input
-                    value={mpin}
-                    onChange={(event) => setMpin(event.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter MPIN"
-                    maxLength={6}
-                    required
-                    disabled={!otpComplete || mpinComplete}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={activeAction !== null || !otpComplete || mpin.length < 4 || mpinComplete}
-                    type="submit"
-                  >
-                    {activeAction === 'mpin' ? 'Confirming MPIN...' : 'Confirm MPIN'}
-                  </button>
-                </form>
-              </section>
-            </div>
-
-            <div className="feedback-column">
-              {message ? <div className="message-banner">{message}</div> : null}
-              {error ? <div className="error-banner">{error}</div> : null}
-            </div>
+            {error ? <div className="err-banner">{error}</div> : null}
+            {message && !error ? <div className="msg-banner">{message}</div> : null}
           </div>
-        </section>
-      </section>
-    </main>
+        </div>
+      </main>
+
+      <footer className="auth-foot">
+        <span>Copyright 2026 NubraOSS</span>
+      </footer>
+    </div>
   )
 }
-
-

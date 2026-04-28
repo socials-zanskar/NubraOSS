@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
 import threading
+import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from google.protobuf.any_pb2 import Any
@@ -17,19 +17,16 @@ from websockets.sync.client import connect as ws_connect
 from app.schemas import ScalperCandle, ScalperSnapshotRequest
 from app.services.instrument_service import instrument_service
 from app.services.market_history_service import HistoricalFetchRequest, market_history_service
-from app.services.scalper_service import scalper_service
+from app.services.nubra_ws_proto import (
+    BatchWebSocketIndexMessage,
+    BatchWebSocketOrderbookMessage,
+    GenericData,
+)
+from app.services.scalper_service import INDEX_HISTORY_SYMBOL_ALIASES, scalper_service
 
 IST = ZoneInfo("Asia/Kolkata")
 UTC = ZoneInfo("UTC")
 log = logging.getLogger(__name__)
-
-_SDK_SITE_PACKAGES = Path(__file__).resolve().parents[4] / "nubra-mcp-server" / ".venv" / "Lib" / "site-packages"
-if _SDK_SITE_PACKAGES.exists():
-    sdk_path = str(_SDK_SITE_PACKAGES)
-    if sdk_path not in sys.path:
-        sys.path.append(sdk_path)
-
-from nubra_python_sdk.protos import nubrafrontend_pb2  # type: ignore  # noqa: E402
 
 _INTERVAL_SECONDS: dict[str, int] = {
     "1m": 60,
@@ -43,6 +40,65 @@ _INTERVAL_SECONDS: dict[str, int] = {
 
 _RECONCILE_EVERY_S = 300
 _WS_RECONNECT_SECONDS = 5
+_FALLBACK_POLL_SECONDS = 3
+_WEBSOCKET_STALE_AFTER_S = 6
+
+_INDEX_UNDERLYING_BY_ALIAS = {
+    alias.strip().upper(): canonical
+    for canonical, aliases in INDEX_HISTORY_SYMBOL_ALIASES.items()
+    for alias in aliases
+}
+
+
+def _canonical_underlying_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    return _INDEX_UNDERLYING_BY_ALIAS.get(normalized, normalized)
+
+
+def _iter_live_symbol_aliases(symbol: str, instrument_type: str) -> tuple[str, ...]:
+    canonical = _canonical_underlying_symbol(symbol)
+    if instrument_type.strip().upper() != "INDEX":
+        return (canonical,)
+
+    seen: set[str] = set()
+    aliases: list[str] = []
+    for candidate in (canonical, *INDEX_HISTORY_SYMBOL_ALIASES.get(canonical, (canonical,))):
+        normalized = candidate.strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            aliases.append(normalized)
+    return tuple(aliases)
+
+
+def _normalize_epoch_seconds(raw_timestamp: object) -> int:
+    timestamp = instrument_service._coerce_positive_int(raw_timestamp, 0) or 0  # noqa: SLF001
+    if timestamp >= 10**18:
+        return timestamp // 1_000_000_000
+    if timestamp >= 10**15:
+        return timestamp // 1_000_000
+    if timestamp >= 10**12:
+        return timestamp // 1000
+    return timestamp
+
+
+def _coerce_live_instrument_ids(row: dict) -> tuple[int, ...]:
+    seen: set[int] = set()
+    ids: list[int] = []
+    for key in ("ref_id", "inst_id", "instrument_ref_id"):
+        value = instrument_service._coerce_positive_int(row.get(key))  # noqa: SLF001
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        ids.append(value)
+    return tuple(ids)
+
+
+def _coerce_tick_instrument_id(item: object) -> int | None:
+    for key in ("ref_id", "inst_id", "instrument_ref_id"):
+        value = instrument_service._coerce_positive_int(getattr(item, key, None))  # noqa: SLF001
+        if value is not None:
+            return value
+    return None
 
 
 class LiveCandle:
@@ -89,6 +145,7 @@ class ScalperLiveSession:
         self._feed_stop = threading.Event()
         self._feed_thread: threading.Thread | None = None
         self._reconcile_task: asyncio.Task | None = None
+        self._fallback_task: asyncio.Task | None = None
 
         self._candles: dict[str, list[LiveCandle]] = {
             "underlying": [],
@@ -104,6 +161,11 @@ class ScalperLiveSession:
         }
         self._index_symbols: list[str] = []
         self._orderbook_ref_ids: list[int] = []
+        self._last_websocket_tick_at: dict[str, float] = {
+            "underlying": 0.0,
+            "call_option": 0.0,
+            "put_option": 0.0,
+        }
 
     async def run(self, ws: WebSocket) -> None:
         self._ws = ws
@@ -131,10 +193,17 @@ class ScalperLiveSession:
                     "interval": data.interval,
                     "last_price": data.last_price,
                     "ref_id": None,
+                    "live_ids": (),
                 }
-                self._panel_lookup[data.instrument.strip().upper()] = panel
-                if data.candles:
-                    self._last_total_volume[panel] = data.candles[-1].volume or None
+                for symbol_alias in _iter_live_symbol_aliases(data.instrument, data.instrument_type):
+                    self._panel_lookup[symbol_alias] = panel
+                for symbol_alias in _iter_live_symbol_aliases(data.display_name, data.instrument_type):
+                    self._panel_lookup[symbol_alias] = panel
+                # Historical candles expose bucket volume, while the websocket feed carries
+                # cumulative session volume. Seeding the live baseline from the last bucket
+                # volume creates an artificial first-tick spike that crushes the histogram.
+                # Start the cumulative baseline on the first live tick instead.
+                self._last_total_volume[panel] = None
 
             self._resolve_tick_subscriptions()
 
@@ -157,6 +226,7 @@ class ScalperLiveSession:
 
             self._start_feed_thread()
             self._reconcile_task = asyncio.create_task(self._reconcile_loop())
+            self._fallback_task = asyncio.create_task(self._quote_fallback_loop())
             await self._consume_events()
 
         except WebSocketDisconnect:
@@ -188,7 +258,10 @@ class ScalperLiveSession:
                 panel = str(event.get("panel") or "")
                 epoch_s = int(event.get("epoch_s") or 0)
                 price = float(event.get("price") or 0.0)
-                total_volume = float(event.get("total_volume") or 0.0)
+                total_volume_raw = event.get("total_volume")
+                total_volume = float(total_volume_raw) if total_volume_raw is not None else None
+                if str(event.get("source") or "") == "websocket" and panel:
+                    self._last_websocket_tick_at[panel] = time.monotonic()
                 if panel and epoch_s > 0 and price > 0:
                     await self._apply_tick(panel, epoch_s, price, total_volume)
 
@@ -248,58 +321,80 @@ class ScalperLiveSession:
                     break
 
     def _dispatch_tick_message(self, raw: bytes) -> None:
-        try:
-            outer = Any()
-            outer.ParseFromString(raw)
-            inner = Any()
-            inner.ParseFromString(outer.value)
-        except Exception as exc:
-            log.debug("Failed to decode scalper tick payload: %s", exc)
-            return
+        channel = ""
+        payload = b""
+        type_url = ""
 
-        if inner.type_url.endswith("BatchWebSocketIndexMessage"):
-            message = nubrafrontend_pb2.BatchWebSocketIndexMessage()
-            inner.Unpack(message)
+        try:
+            envelope = GenericData()
+            envelope.ParseFromString(raw)
+            channel = str(getattr(envelope, "key", "") or "").strip().lower()
+            payload = bytes(getattr(envelope.data, "value", b"") or b"")
+            type_url = str(getattr(envelope.data, "type_url", "") or "")
+        except Exception as exc:
+            log.debug("Failed to decode scalper GenericData payload: %s", exc)
+
+        if not payload:
+            try:
+                outer = Any()
+                outer.ParseFromString(raw)
+                inner = Any()
+                inner.ParseFromString(outer.value)
+                payload = bytes(inner.value)
+                type_url = str(inner.type_url or "")
+            except Exception as exc:
+                log.debug("Failed to decode scalper tick payload: %s", exc)
+                return
+
+        if channel == "index" or type_url.endswith("BatchWebSocketIndexMessage"):
+            message = BatchWebSocketIndexMessage()
+            message.ParseFromString(payload)
             for item in list(message.indexes) + list(message.instruments):
-                symbol = str(getattr(item, "indexname", "") or "").strip().upper()
-                panel = self._panel_lookup.get(symbol)
+                raw_symbol = str(getattr(item, "indexname", "") or "").strip().upper()
+                symbol = _canonical_underlying_symbol(raw_symbol)
+                panel = self._panel_lookup.get(symbol) or self._panel_lookup.get(raw_symbol)
                 if not panel:
                     continue
-                timestamp_ns = int(getattr(item, "timestamp", 0) or 0)
+                epoch_s = _normalize_epoch_seconds(getattr(item, "timestamp", 0))
                 price = float(getattr(item, "index_value", 0) or 0) / 100.0
                 total_volume = float(getattr(item, "volume", 0) or 0.0)
-                if timestamp_ns > 0 and price > 0:
+                if epoch_s > 0 and price > 0:
                     self._queue_event({
                         "type": "tick",
                         "panel": panel,
-                        "epoch_s": int(timestamp_ns / 1_000_000_000),
+                        "epoch_s": epoch_s,
                         "price": price,
                         "total_volume": total_volume,
+                        "source": "websocket",
                     })
             return
 
-        if inner.type_url.endswith("BatchWebSocketOrderbookMessage"):
-            message = nubrafrontend_pb2.BatchWebSocketOrderbookMessage()
-            inner.Unpack(message)
-            ref_to_panel = {
-                int(meta["ref_id"]): panel
-                for panel, meta in self._meta.items()
-                if meta.get("ref_id") is not None
-            }
+        if channel == "orderbook" or type_url.endswith("BatchWebSocketOrderbookMessage"):
+            message = BatchWebSocketOrderbookMessage()
+            message.ParseFromString(payload)
+            ref_to_panel: dict[int, str] = {}
+            for panel, meta in self._meta.items():
+                live_ids = tuple(int(value) for value in meta.get("live_ids") or ())
+                if not live_ids and meta.get("ref_id") is not None:
+                    live_ids = (int(meta["ref_id"]),)
+                for value in live_ids:
+                    ref_to_panel[value] = panel
             for item in list(message.instruments):
-                panel = ref_to_panel.get(int(getattr(item, "ref_id", 0) or 0))
+                instrument_id = _coerce_tick_instrument_id(item)
+                panel = ref_to_panel.get(instrument_id) if instrument_id is not None else None
                 if not panel:
                     continue
-                timestamp_ns = int(getattr(item, "timestamp", 0) or 0)
+                epoch_s = _normalize_epoch_seconds(getattr(item, "timestamp", 0))
                 price = float(getattr(item, "ltp", 0) or 0) / 100.0
                 total_volume = float(getattr(item, "volume", 0) or 0.0)
-                if timestamp_ns > 0 and price > 0:
+                if epoch_s > 0 and price > 0:
                     self._queue_event({
                         "type": "tick",
                         "panel": panel,
-                        "epoch_s": int(timestamp_ns / 1_000_000_000),
+                        "epoch_s": epoch_s,
                         "price": price,
                         "total_volume": total_volume,
+                        "source": "websocket",
                     })
 
     def _queue_event(self, event: dict) -> None:
@@ -335,19 +430,23 @@ class ScalperLiveSession:
                 str(row.get("symbol") or "").strip().upper(),
                 str(row.get("stock_name") or "").strip().upper(),
             }
-            ref_id = instrument_service._coerce_positive_int(row.get("ref_id"))  # noqa: SLF001
-            if ref_id is None:
+            live_ids = _coerce_live_instrument_ids(row)
+            if not live_ids:
                 continue
+            primary_live_id = live_ids[0]
 
             if call_symbol in names:
-                option_ref_ids.append(ref_id)
-                self._meta["call_option"]["ref_id"] = ref_id
+                option_ref_ids.append(primary_live_id)
+                self._meta["call_option"]["ref_id"] = primary_live_id
+                self._meta["call_option"]["live_ids"] = live_ids
             if put_symbol in names:
-                option_ref_ids.append(ref_id)
-                self._meta["put_option"]["ref_id"] = ref_id
+                option_ref_ids.append(primary_live_id)
+                self._meta["put_option"]["ref_id"] = primary_live_id
+                self._meta["put_option"]["live_ids"] = live_ids
             if underlying_type != "INDEX" and underlying_symbol in names:
-                underlying_ref_ids.append(ref_id)
-                self._meta["underlying"]["ref_id"] = ref_id
+                underlying_ref_ids.append(primary_live_id)
+                self._meta["underlying"]["ref_id"] = primary_live_id
+                self._meta["underlying"]["live_ids"] = live_ids
 
         if len(option_ref_ids) < 2:
             raise HTTPException(
@@ -356,9 +455,9 @@ class ScalperLiveSession:
             )
 
         self._orderbook_ref_ids = sorted(set(option_ref_ids + underlying_ref_ids))
-        self._index_symbols = [underlying_symbol] if underlying_type == "INDEX" else []
+        self._index_symbols = list(_iter_live_symbol_aliases(underlying_symbol, underlying_type)) if underlying_type == "INDEX" else []
 
-    async def _apply_tick(self, panel: str, epoch_s: int, price: float, total_volume: float) -> None:
+    async def _apply_tick(self, panel: str, epoch_s: int, price: float, total_volume: float | None) -> None:
         state = self._candles.get(panel)
         if state is None:
             return
@@ -375,11 +474,12 @@ class ScalperLiveSession:
             else:
                 bucket_epoch_s = last_epoch_s + ((epoch_s - last_epoch_s) // interval_s) * interval_s
 
-        previous_total = self._last_total_volume.get(panel)
         volume_delta = 0.0
-        if previous_total is not None and total_volume >= previous_total:
-            volume_delta = total_volume - previous_total
-        self._last_total_volume[panel] = total_volume
+        if total_volume is not None:
+            previous_total = self._last_total_volume.get(panel)
+            if previous_total is not None and total_volume >= previous_total:
+                volume_delta = total_volume - previous_total
+            self._last_total_volume[panel] = total_volume
 
         if state and bucket_epoch_s == state[-1].epoch_s:
             live_candle = state[-1]
@@ -405,6 +505,97 @@ class ScalperLiveSession:
 
         self._meta[panel]["last_price"] = live_candle.close
         await self._emit_update(panel, live_candle)
+
+    async def _quote_fallback_loop(self) -> None:
+        while not self._closed:
+            await asyncio.sleep(_FALLBACK_POLL_SECONDS)
+            if self._closed:
+                break
+
+            stale_panels = [
+                panel
+                for panel in ("underlying", "call_option", "put_option")
+                if (time.monotonic() - self._last_websocket_tick_at.get(panel, 0.0)) >= _WEBSOCKET_STALE_AFTER_S
+            ]
+            if not stale_panels:
+                continue
+
+            try:
+                events = await asyncio.to_thread(self._poll_stale_quotes, tuple(stale_panels))
+            except Exception as exc:
+                log.debug("Scalper fallback quote polling failed: %s", exc)
+                continue
+
+            for event in events:
+                self._queue_event(event)
+
+    def _poll_stale_quotes(self, panels: tuple[str, ...]) -> list[dict]:
+        if not panels:
+            return []
+
+        base_url = scalper_service._get_base_url(self._req.environment)  # noqa: SLF001
+        headers = scalper_service._request_headers(self._req.session_token, self._req.device_id)  # noqa: SLF001
+        events: list[dict] = []
+
+        with httpx.Client(timeout=10.0) as client:
+            for panel in panels:
+                meta = self._meta.get(panel) or {}
+                instrument = str(meta.get("instrument") or "").strip().upper()
+                instrument_type = str(meta.get("instrument_type") or "").strip().upper()
+                ref_id = instrument_service._coerce_positive_int(meta.get("ref_id"))  # noqa: SLF001
+
+                try:
+                    if panel == "underlying" and (instrument_type == "INDEX" or ref_id is None):
+                        params = {"exchange": self._req.exchange} if self._req.exchange == "BSE" else None
+                        response = client.get(
+                            f"{base_url}/optionchains/{instrument}/price",
+                            params=params,
+                            headers=headers,
+                        )
+                        if response.status_code >= 400:
+                            continue
+                        payload = response.json()
+                        price_raw = payload.get("price")
+                        epoch_s = _normalize_epoch_seconds(payload.get("timestamp") or payload.get("ts") or int(time.time()))
+                        total_volume: float | None = None
+                    else:
+                        live_id = ref_id or next(
+                            (
+                                instrument_service._coerce_positive_int(value)  # noqa: SLF001
+                                for value in meta.get("live_ids") or ()
+                                if instrument_service._coerce_positive_int(value) is not None  # noqa: SLF001
+                            ),
+                            None,
+                        )
+                        if live_id is None:
+                            continue
+                        response = client.get(
+                            f"{base_url}/orderbooks/{live_id}",
+                            params={"levels": 1},
+                            headers=headers,
+                        )
+                        if response.status_code >= 400:
+                            continue
+                        payload = response.json().get("orderBook") or {}
+                        price_raw = payload.get("ltp") or payload.get("last_traded_price")
+                        epoch_s = _normalize_epoch_seconds(payload.get("ts") or payload.get("timestamp") or int(time.time()))
+                        volume_raw = payload.get("volume")
+                        total_volume = float(volume_raw) if isinstance(volume_raw, (int, float)) else None
+                except Exception:
+                    continue
+
+                if not isinstance(price_raw, (int, float)) or float(price_raw) <= 0:
+                    continue
+
+                events.append({
+                    "type": "tick",
+                    "panel": panel,
+                    "epoch_s": epoch_s,
+                    "price": float(price_raw) / 100.0,
+                    "total_volume": total_volume,
+                    "source": "poll",
+                })
+        return events
 
     async def _reconcile_loop(self) -> None:
         while not self._closed:
@@ -529,6 +720,13 @@ class ScalperLiveSession:
     async def _shutdown(self) -> None:
         self._closed = True
         self._feed_stop.set()
+
+        if self._fallback_task is not None:
+            self._fallback_task.cancel()
+            try:
+                await self._fallback_task
+            except asyncio.CancelledError:
+                pass
 
         if self._reconcile_task is not None:
             self._reconcile_task.cancel()
