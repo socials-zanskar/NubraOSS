@@ -166,6 +166,74 @@ class ScalperLiveSession:
             "call_option": 0.0,
             "put_option": 0.0,
         }
+        self._option_pair: dict | None = None
+        self._live_id_to_panel: dict[int, str] = {}
+
+    def prime_from_seed_snapshot(self, seed_snapshot: dict) -> bool:
+        try:
+            option_pair = seed_snapshot.get("option_pair")
+            panels = seed_snapshot.get("panels")
+            if not isinstance(option_pair, dict) or not isinstance(panels, dict):
+                return False
+
+            for panel in ("underlying", "call_option", "put_option"):
+                panel_data = panels.get(panel)
+                if not isinstance(panel_data, dict):
+                    return False
+
+                raw_candles = panel_data.get("candles") or []
+                live_candles: list[LiveCandle] = []
+                for candle in raw_candles:
+                    if not isinstance(candle, dict):
+                        continue
+                    epoch_s = int(candle.get("time") or 0)
+                    if epoch_s <= 0:
+                        continue
+                    live_candles.append(
+                        LiveCandle(
+                            ScalperCandle(
+                                time_ist=datetime.fromtimestamp(epoch_s, tz=UTC).astimezone(IST).strftime("%d %b %H:%M"),
+                                epoch_ms=epoch_s * 1000,
+                                open=float(candle.get("open") or 0.0),
+                                high=float(candle.get("high") or 0.0),
+                                low=float(candle.get("low") or 0.0),
+                                close=float(candle.get("close") or 0.0),
+                                volume=float(candle.get("volume") or 0.0),
+                            )
+                        )
+                    )
+
+                self._candles[panel] = live_candles
+                self._meta[panel] = {
+                    "instrument": str(panel_data.get("instrument") or ""),
+                    "display_name": str(panel_data.get("display_name") or ""),
+                    "exchange": str(panel_data.get("exchange") or self._req.exchange),
+                    "instrument_type": str(panel_data.get("instrument_type") or ""),
+                    "interval": str(panel_data.get("interval") or self._req.interval),
+                    "last_price": float(panel_data["last_price"]) if panel_data.get("last_price") is not None else None,
+                    "ref_id": None,
+                    "live_ids": (),
+                }
+
+                for symbol_alias in _iter_live_symbol_aliases(self._meta[panel]["instrument"], self._meta[panel]["instrument_type"]):
+                    self._panel_lookup[symbol_alias] = panel
+                for symbol_alias in _iter_live_symbol_aliases(self._meta[panel]["display_name"], self._meta[panel]["instrument_type"]):
+                    self._panel_lookup[symbol_alias] = panel
+                self._last_total_volume[panel] = None
+
+            self._option_pair = option_pair
+            call_ref_id = instrument_service._coerce_positive_int(option_pair.get("call_ref_id"))  # noqa: SLF001
+            put_ref_id = instrument_service._coerce_positive_int(option_pair.get("put_ref_id"))  # noqa: SLF001
+            if call_ref_id is not None:
+                self._meta["call_option"]["ref_id"] = call_ref_id
+                self._meta["call_option"]["live_ids"] = (call_ref_id,)
+            if put_ref_id is not None:
+                self._meta["put_option"]["ref_id"] = put_ref_id
+                self._meta["put_option"]["live_ids"] = (put_ref_id,)
+            return True
+        except Exception as exc:
+            log.warning("Failed to prime scalper live session from client snapshot: %s", exc)
+            return False
 
     async def run(self, ws: WebSocket) -> None:
         self._ws = ws
@@ -173,43 +241,45 @@ class ScalperLiveSession:
         self._event_queue = asyncio.Queue()
 
         try:
-            await self._send("status", message="Loading historical candles from Nubra...")
+            snapshot = None
+            if self._meta:
+                await self._send("status", message="Using existing REST snapshot. Connecting directly to Nubra live tick stream...")
+            else:
+                await self._send("status", message="Loading historical candles from Nubra...")
 
-            snapshot = await asyncio.get_running_loop().run_in_executor(
-                None, scalper_service.snapshot, self._req
-            )
+                snapshot = await asyncio.get_running_loop().run_in_executor(
+                    None, scalper_service.snapshot, self._req
+                )
 
-            for panel, data in (
-                ("underlying", snapshot.underlying),
-                ("call_option", snapshot.call_option),
-                ("put_option", snapshot.put_option),
-            ):
-                self._candles[panel] = [LiveCandle(c) for c in data.candles]
-                self._meta[panel] = {
-                    "instrument": data.instrument,
-                    "display_name": data.display_name,
-                    "exchange": data.exchange,
-                    "instrument_type": data.instrument_type,
-                    "interval": data.interval,
-                    "last_price": data.last_price,
-                    "ref_id": None,
-                    "live_ids": (),
-                }
-                for symbol_alias in _iter_live_symbol_aliases(data.instrument, data.instrument_type):
-                    self._panel_lookup[symbol_alias] = panel
-                for symbol_alias in _iter_live_symbol_aliases(data.display_name, data.instrument_type):
-                    self._panel_lookup[symbol_alias] = panel
-                # Historical candles expose bucket volume, while the websocket feed carries
-                # cumulative session volume. Seeding the live baseline from the last bucket
-                # volume creates an artificial first-tick spike that crushes the histogram.
-                # Start the cumulative baseline on the first live tick instead.
-                self._last_total_volume[panel] = None
+                for panel, data in (
+                    ("underlying", snapshot.underlying),
+                    ("call_option", snapshot.call_option),
+                    ("put_option", snapshot.put_option),
+                ):
+                    self._candles[panel] = [LiveCandle(c) for c in data.candles]
+                    self._meta[panel] = {
+                        "instrument": data.instrument,
+                        "display_name": data.display_name,
+                        "exchange": data.exchange,
+                        "instrument_type": data.instrument_type,
+                        "interval": data.interval,
+                        "last_price": data.last_price,
+                        "ref_id": None,
+                        "live_ids": (),
+                    }
+                    for symbol_alias in _iter_live_symbol_aliases(data.instrument, data.instrument_type):
+                        self._panel_lookup[symbol_alias] = panel
+                    for symbol_alias in _iter_live_symbol_aliases(data.display_name, data.instrument_type):
+                        self._panel_lookup[symbol_alias] = panel
+                    self._last_total_volume[panel] = None
+
+                self._option_pair = snapshot.option_pair.model_dump()
 
             self._resolve_tick_subscriptions()
 
             await ws.send_json({
                 "type": "init",
-                "option_pair": snapshot.option_pair.model_dump(),
+                "option_pair": self._option_pair,
                 "panels": {
                     panel: {
                         **self._meta[panel],
@@ -372,16 +442,9 @@ class ScalperLiveSession:
         if channel == "orderbook" or type_url.endswith("BatchWebSocketOrderbookMessage"):
             message = BatchWebSocketOrderbookMessage()
             message.ParseFromString(payload)
-            ref_to_panel: dict[int, str] = {}
-            for panel, meta in self._meta.items():
-                live_ids = tuple(int(value) for value in meta.get("live_ids") or ())
-                if not live_ids and meta.get("ref_id") is not None:
-                    live_ids = (int(meta["ref_id"]),)
-                for value in live_ids:
-                    ref_to_panel[value] = panel
             for item in list(message.instruments):
                 instrument_id = _coerce_tick_instrument_id(item)
-                panel = ref_to_panel.get(instrument_id) if instrument_id is not None else None
+                panel = self._live_id_to_panel.get(instrument_id) if instrument_id is not None else None
                 if not panel:
                     continue
                 epoch_s = _normalize_epoch_seconds(getattr(item, "timestamp", 0))
@@ -406,19 +469,36 @@ class ScalperLiveSession:
         return "wss://uatapi.nubra.io/apibatch/ws" if environment == "UAT" else "wss://api.nubra.io/apibatch/ws"
 
     def _resolve_tick_subscriptions(self) -> None:
-        rows = instrument_service._get_cached_rows(  # noqa: SLF001
-            self._req.session_token,
-            self._req.environment,
-            self._req.device_id,
-        )
-
         call_symbol = self._meta["call_option"]["instrument"].strip().upper()
         put_symbol = self._meta["put_option"]["instrument"].strip().upper()
         underlying_symbol = self._meta["underlying"]["instrument"].strip().upper()
         underlying_type = str(self._meta["underlying"]["instrument_type"] or "").strip().upper()
 
-        option_ref_ids: list[int] = []
+        option_ref_ids: set[int] = set()
         underlying_ref_ids: list[int] = []
+
+        seeded_call_ref_id = instrument_service._coerce_positive_int(self._meta["call_option"].get("ref_id"))  # noqa: SLF001
+        seeded_put_ref_id = instrument_service._coerce_positive_int(self._meta["put_option"].get("ref_id"))  # noqa: SLF001
+        if seeded_call_ref_id is not None:
+            option_ref_ids.add(seeded_call_ref_id)
+            self._meta["call_option"]["live_ids"] = (seeded_call_ref_id,)
+        if seeded_put_ref_id is not None:
+            option_ref_ids.add(seeded_put_ref_id)
+            self._meta["put_option"]["live_ids"] = (seeded_put_ref_id,)
+
+        needs_row_lookup = (
+            seeded_call_ref_id is None
+            or seeded_put_ref_id is None
+            or underlying_type != "INDEX"
+        )
+
+        rows: list[dict] = []
+        if needs_row_lookup:
+            rows = instrument_service._get_cached_rows(  # noqa: SLF001
+                self._req.session_token,
+                self._req.environment,
+                self._req.device_id,
+            )
 
         for row in rows:
             exchange = str(row.get("exchange") or "").strip().upper()
@@ -435,12 +515,12 @@ class ScalperLiveSession:
                 continue
             primary_live_id = live_ids[0]
 
-            if call_symbol in names:
-                option_ref_ids.append(primary_live_id)
+            if seeded_call_ref_id is None and call_symbol in names:
+                option_ref_ids.add(primary_live_id)
                 self._meta["call_option"]["ref_id"] = primary_live_id
                 self._meta["call_option"]["live_ids"] = live_ids
-            if put_symbol in names:
-                option_ref_ids.append(primary_live_id)
+            if seeded_put_ref_id is None and put_symbol in names:
+                option_ref_ids.add(primary_live_id)
                 self._meta["put_option"]["ref_id"] = primary_live_id
                 self._meta["put_option"]["live_ids"] = live_ids
             if underlying_type != "INDEX" and underlying_symbol in names:
@@ -454,8 +534,15 @@ class ScalperLiveSession:
                 detail="Unable to resolve live option ref_ids for the selected CE / PE contracts.",
             )
 
-        self._orderbook_ref_ids = sorted(set(option_ref_ids + underlying_ref_ids))
+        self._orderbook_ref_ids = sorted(option_ref_ids.union(underlying_ref_ids))
         self._index_symbols = list(_iter_live_symbol_aliases(underlying_symbol, underlying_type)) if underlying_type == "INDEX" else []
+        self._live_id_to_panel = {}
+        for panel, meta in self._meta.items():
+            live_ids = tuple(int(value) for value in meta.get("live_ids") or ())
+            if not live_ids and meta.get("ref_id") is not None:
+                live_ids = (int(meta["ref_id"]),)
+            for value in live_ids:
+                self._live_id_to_panel[value] = panel
 
     async def _apply_tick(self, panel: str, epoch_s: int, price: float, total_volume: float | None) -> None:
         state = self._candles.get(panel)

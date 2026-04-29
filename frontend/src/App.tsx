@@ -399,6 +399,7 @@ const API_BASE_URL = ''
 const SESSION_STORAGE_KEY = 'nubraoss.session'
 const EXECUTION_SESSIONS_STORAGE_KEY = 'nubraoss.execution-sessions'
 const SCALPER_SNAPSHOT_CACHE_PREFIX = 'nubraoss.scalperSnapshot'
+const DEMO_SHOW_SCALPER_VOLUME_BREAKOUT = true
 const AUTH_DEFAULT_MESSAGE = 'Choose SMS OTP or TOTP, complete verification, then confirm MPIN.'
 
 const demoSession: SuccessResponse = {
@@ -457,13 +458,32 @@ function scalperSnapshotCacheKeys(input: {
   return { exact, generic }
 }
 
+function currentLocalYyyyMmDd(): string {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}${month}${day}`
+}
+
+function isActiveExpiryValue(value: string | null | undefined): boolean {
+  const normalized = normalizeExpiryValue(value)
+  if (!normalized || !/^\d{8}$/.test(normalized)) return true
+  return normalized >= currentLocalYyyyMmDd()
+}
+
 function loadCachedScalperSnapshot(keys: { exact: string; generic: string }): ScalperSnapshotResponse | null {
   if (typeof window === 'undefined') return null
   for (const key of [keys.exact, keys.generic]) {
     const raw = window.localStorage.getItem(key)
     if (!raw) continue
     try {
-      return JSON.parse(raw) as ScalperSnapshotResponse
+      const parsed = JSON.parse(raw) as ScalperSnapshotResponse
+      if (!isActiveExpiryValue(parsed.option_pair?.expiry)) {
+        window.localStorage.removeItem(key)
+        continue
+      }
+      return parsed
     } catch {
       window.localStorage.removeItem(key)
     }
@@ -473,9 +493,38 @@ function loadCachedScalperSnapshot(keys: { exact: string; generic: string }): Sc
 
 function saveCachedScalperSnapshot(keys: { exact: string; generic: string }, snapshot: ScalperSnapshotResponse): void {
   if (typeof window === 'undefined') return
+  if (!isActiveExpiryValue(snapshot.option_pair?.expiry)) {
+    window.localStorage.removeItem(keys.exact)
+    window.localStorage.removeItem(keys.generic)
+    return
+  }
   const payload = JSON.stringify(snapshot)
   window.localStorage.setItem(keys.exact, payload)
   window.localStorage.setItem(keys.generic, payload)
+}
+
+function snapshotMatchesScalperSelection(input: {
+  snapshot: ScalperSnapshotResponse | null
+  underlying: string
+  ceStrike: number
+  peStrike: number
+  expiry: string | null
+}): boolean {
+  const { snapshot, underlying, ceStrike, peStrike, expiry } = input
+  if (!snapshot) return false
+
+  const pair = snapshot.option_pair
+  const normalizedUnderlying = underlying.trim().toUpperCase()
+  const snapshotUnderlying = (pair.underlying || '').trim().toUpperCase()
+  const normalizedExpiry = normalizeExpiryValue(expiry)
+  const snapshotExpiry = normalizeExpiryValue(pair.expiry)
+
+  return (
+    snapshotUnderlying === normalizedUnderlying &&
+    Number(pair.ce_strike_price) === ceStrike &&
+    Number(pair.pe_strike_price) === peStrike &&
+    (normalizedExpiry ?? '') === (snapshotExpiry ?? '')
+  )
 }
 
 function formatPrice(value: number | null | undefined): string {
@@ -668,6 +717,19 @@ function extractErrorMessage(payload: ApiErrorPayload | null | undefined, fallba
   return fallback
 }
 
+async function parseJsonResponse<T>(response: Response): Promise<T | null> {
+  const text = await response.text()
+  if (!text.trim()) {
+    return null
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return null
+  }
+}
+
 function formatCompactNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '-'
   if (value >= 1_00_00_000) return `${(value / 1_00_00_000).toFixed(2)}Cr`
@@ -733,7 +795,9 @@ export default function App() {
   const [scalperExpiry, setScalperExpiry] = useState('')
   const pendingScalperAtmSync = useRef<string | null>('NIFTY')
   const pendingScalperExpiry = useRef<string | null>(null)
+  const pendingScalperStrikePreset = useRef<{ underlying: string; ce: string; pe: string } | null>(null)
   const [scalperReconnectNonce, setScalperReconnectNonce] = useState(0)
+  const [scalperFeedRequested, setScalperFeedRequested] = useState(false)
   const [scalperValidating, setScalperValidating] = useState(false)
   const [scalperSnapshot, setScalperSnapshot] = useState<ScalperSnapshotResponse | null>(null)
   const [scalperSnapshotError, setScalperSnapshotError] = useState('')
@@ -1036,11 +1100,50 @@ export default function App() {
   const normalizedScalperExpiry = normalizeExpiryValue(scalperExpiry)
   const scalperExecutionSession = getExecutionSession(scalperExecutionEnvironment)
   const webhookExecutionSession = getExecutionSession(webhookExecutionEnvironment)
+  const scalperSnapshotMatchesSelection = snapshotMatchesScalperSelection({
+    snapshot: scalperSnapshot,
+    underlying: scalperUnderlying,
+    ceStrike: parsedScalperCeStrike,
+    peStrike: parsedScalperPeStrike,
+    expiry: normalizedScalperExpiry,
+  })
+  const currentScalperSnapshot = scalperSnapshotMatchesSelection ? scalperSnapshot : null
+  const scalperSeedSnapshot = useMemo(() => {
+    if (!currentScalperSnapshot) return null
+
+    const toLiveCandles = (panel: ScalperChartPanel) => ({
+      instrument: panel.instrument,
+      display_name: panel.display_name,
+      exchange: panel.exchange,
+      instrument_type: panel.instrument_type,
+      interval: panel.interval,
+      last_price: panel.last_price,
+      candles: panel.candles.map((candle) => ({
+        time: Math.floor(candle.epoch_ms / 1000),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume ?? 0,
+      })),
+    })
+
+    return {
+      option_pair: { ...currentScalperSnapshot.option_pair },
+      panels: {
+        underlying: toLiveCandles(currentScalperSnapshot.underlying),
+        call_option: toLiveCandles(currentScalperSnapshot.call_option),
+        put_option: toLiveCandles(currentScalperSnapshot.put_option),
+      },
+    }
+  }, [currentScalperSnapshot])
   const scalperLive = useScalperLive({
     enabled:
       view === 'scalper' &&
       !!session &&
       !session.is_demo &&
+      scalperFeedRequested &&
+      !!scalperSeedSnapshot &&
       !scalperValidating &&
       Number.isFinite(parsedScalperCeStrike) &&
       parsedScalperCeStrike > 0 &&
@@ -1057,9 +1160,10 @@ export default function App() {
     expiry: normalizedScalperExpiry,
     lookback_days: 5,
     reconnect_nonce: scalperReconnectNonce,
+    seedSnapshot: scalperSeedSnapshot,
   })
   const scalperPanelMeta = scalperLive.panelMeta
-  const scalperOptionPair = scalperLive.optionPair ?? scalperSnapshot?.option_pair ?? null
+  const scalperOptionPair = scalperLive.optionPair ?? currentScalperSnapshot?.option_pair ?? null
   const indicatorHook = useIndicators()
   const { liveVersion, liveCandlesRef } = scalperLive
   const livePanelCandleCounts = useMemo(
@@ -1077,10 +1181,10 @@ export default function App() {
     if (!candles.length) {
       const snapshotCandles =
         panel === 'call_option'
-          ? scalperSnapshot?.call_option.candles
+          ? currentScalperSnapshot?.call_option.candles
           : panel === 'put_option'
-            ? scalperSnapshot?.put_option.candles
-            : scalperSnapshot?.underlying.candles
+            ? currentScalperSnapshot?.put_option.candles
+            : currentScalperSnapshot?.underlying.candles
       if (!snapshotCandles) return []
       return snapshotCandles.map((candle) => ({
         time: Math.floor(candle.epoch_ms / 1000) + istOffsetSeconds,
@@ -1104,17 +1208,17 @@ export default function App() {
   const indicatorOverlaysCall = useMemo(
     () => indicatorHook.computeAll(liveToOhlcv('call_option')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [indicatorHook.indicators, liveVersion, scalperSnapshot?.call_option.candles],
+    [indicatorHook.indicators, liveVersion, currentScalperSnapshot?.call_option.candles],
   )
   const indicatorOverlaysUnderlying = useMemo(
     () => indicatorHook.computeAll(liveToOhlcv('underlying')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [indicatorHook.indicators, liveVersion, scalperSnapshot?.underlying.candles],
+    [indicatorHook.indicators, liveVersion, currentScalperSnapshot?.underlying.candles],
   )
   const indicatorOverlaysPut = useMemo(
     () => indicatorHook.computeAll(liveToOhlcv('put_option')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [indicatorHook.indicators, liveVersion, scalperSnapshot?.put_option.candles],
+    [indicatorHook.indicators, liveVersion, currentScalperSnapshot?.put_option.candles],
   )
 
   const automationSignals = useMemo(() => {
@@ -1135,10 +1239,10 @@ export default function App() {
     } else {
       const snapshotCandles =
         panel === 'call_option'
-          ? scalperSnapshot?.call_option.candles
+          ? currentScalperSnapshot?.call_option.candles
           : panel === 'put_option'
-            ? scalperSnapshot?.put_option.candles
-            : scalperSnapshot?.underlying.candles
+            ? currentScalperSnapshot?.put_option.candles
+            : currentScalperSnapshot?.underlying.candles
       ohlcv = (snapshotCandles ?? []).map((candle) => ({
         time: Math.floor(candle.epoch_ms / 1000) + istOffsetSeconds,
         open: candle.open,
@@ -1150,7 +1254,7 @@ export default function App() {
     }
     return indicatorHook.computeAll(ohlcv).signals
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [automateConfig.panel, liveVersion, indicatorHook.indicators, scalperSnapshot])
+  }, [automateConfig.panel, liveVersion, indicatorHook.indicators, currentScalperSnapshot])
 
   const automationHasSignals = useMemo(
     () =>
@@ -1159,14 +1263,29 @@ export default function App() {
           indicator.enabled &&
           (indicator.signal.buyCondition !== null || indicator.signal.sellCondition !== null),
       ),
-    [indicatorHook.indicators],
+      [indicatorHook.indicators],
   )
+
+  const scalperAutomationDisabledReason = !session
+    ? 'Log in to use automation.'
+    : session.is_demo
+      ? 'A live (non-demo) session is required to use automation.'
+      : scalperExecutionEnvironment !== 'UAT'
+        ? 'Scalper automation order placement is enabled only in UAT for now.'
+        : !scalperExecutionSession
+          ? 'Authenticate a UAT execution session to use automation.'
+          : ''
+  const scalperAutomationDisabled = Boolean(scalperAutomationDisabledReason)
 
   const automation = useAutomation({
     enabled: automateEnabled,
     config: automateConfig,
-    session: session
-      ? { session_token: session.access_token, device_id: session.device_id, environment: session.environment }
+    session: scalperExecutionSession
+      ? {
+          session_token: scalperExecutionSession.access_token,
+          device_id: scalperExecutionSession.device_id,
+          environment: scalperExecutionEnvironment,
+        }
       : null,
     optionPair: scalperOptionPair
       ? {
@@ -1180,12 +1299,19 @@ export default function App() {
         }
       : null,
     panelSignals: automationSignals,
-    callLtp: scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null,
-    putLtp: scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null,
-    underlyingLtp: scalperPanelMeta?.underlying?.last_price ?? scalperSnapshot?.underlying.last_price ?? null,
+    callLtp: scalperPanelMeta?.call_option?.last_price ?? currentScalperSnapshot?.call_option.last_price ?? null,
+    putLtp: scalperPanelMeta?.put_option?.last_price ?? currentScalperSnapshot?.put_option.last_price ?? null,
+    underlyingLtp:
+      scalperPanelMeta?.underlying?.last_price ?? currentScalperSnapshot?.underlying.last_price ?? null,
     liveVersion,
     apiBase: API_BASE_URL,
   })
+
+  useEffect(() => {
+    if (automateEnabled && scalperAutomationDisabled) {
+      setAutomateEnabled(false)
+    }
+  }, [automateEnabled, scalperAutomationDisabled])
 
   function sanitizePositiveInteger(value: string, fallback = 1): number {
     const parsed = Number(value)
@@ -1238,7 +1364,7 @@ export default function App() {
   }
 
   async function validateScalperSessionAndReconnect() {
-    if (!session || session.is_demo || !scalperExecutionSession) return
+    if (!session || session.is_demo) return
 
     setScalperValidating(true)
     try {
@@ -1246,9 +1372,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_token: scalperExecutionSession.access_token,
-          device_id: scalperExecutionSession.device_id,
-          environment: scalperExecutionEnvironment,
+          session_token: session.access_token,
+          device_id: derivedDeviceId,
+          environment: DATA_ENVIRONMENT,
         }),
       })
       const data = (await response.json()) as SessionStatusResponse | ApiErrorPayload
@@ -1258,24 +1384,15 @@ export default function App() {
 
       const result = data as SessionStatusResponse
       if (!result.active) {
-        if (scalperExecutionEnvironment === 'PROD') {
-          resetSession('Your Nubra session expired. Please log in again to restore the live scalper feed.')
-        } else {
-          clearExecutionSession(scalperExecutionEnvironment)
-          setScalperExecutionEnvironment('PROD')
-          setScalperTradeError('Your UAT execution session expired. Please authenticate again if you want to place UAT orders.')
-        }
+        resetSession('Your Nubra session expired. Please log in again to restore the live scalper feed.')
         return
       }
 
       syncSessionAccountId(result.account_id)
+      setScalperFeedRequested(true)
       setScalperReconnectNonce((value) => value + 1)
     } catch (err) {
-      if (scalperExecutionEnvironment === 'PROD') {
-        resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
-      } else {
-        setScalperTradeError(err instanceof Error ? err.message : 'Unable to validate your UAT execution session.')
-      }
+      resetSession(err instanceof Error ? err.message : 'Unable to validate your session.')
     } finally {
       setScalperValidating(false)
     }
@@ -1283,14 +1400,19 @@ export default function App() {
 
   async function submitScalperOrder(optionLeg: 'CE' | 'PE', orderSide: 'ORDER_SIDE_BUY' | 'ORDER_SIDE_SELL') {
     if (!session || session.is_demo || !scalperOptionPair || !scalperExecutionSession) return
+    if (scalperExecutionEnvironment !== 'UAT') {
+      setScalperTradeError('Scalper order placement is temporarily restricted to UAT only.')
+      setScalperTradeMessage('')
+      return
+    }
 
     const isCall = optionLeg === 'CE'
     const lots = sanitizePositiveInteger(isCall ? scalperCallLots : scalperPutLots)
     const instrumentRefId = isCall ? scalperOptionPair.call_ref_id : scalperOptionPair.put_ref_id
     const instrumentDisplayName = isCall ? scalperOptionPair.call_display_name : scalperOptionPair.put_display_name
     const ltpPrice = isCall
-      ? (scalperPanelMeta?.call_option?.last_price ?? scalperSnapshot?.call_option.last_price ?? null)
-      : (scalperPanelMeta?.put_option?.last_price ?? scalperSnapshot?.put_option.last_price ?? null)
+      ? (scalperPanelMeta?.call_option?.last_price ?? currentScalperSnapshot?.call_option.last_price ?? null)
+      : (scalperPanelMeta?.put_option?.last_price ?? currentScalperSnapshot?.put_option.last_price ?? null)
 
     if (!instrumentRefId) {
       setScalperTradeError(`Unable to resolve ${optionLeg} contract metadata for order placement.`)
@@ -1594,6 +1716,12 @@ export default function App() {
   }, [session])
 
   useEffect(() => {
+    if (!DEMO_SHOW_SCALPER_VOLUME_BREAKOUT && activeScalperTool === 'volume-breakout') {
+      setActiveScalperTool('delta-neutral')
+    }
+  }, [activeScalperTool])
+
+  useEffect(() => {
     if (view !== 'volume-breakout' || !session) return
 
     let cancelled = false
@@ -1666,8 +1794,18 @@ export default function App() {
   useEffect(() => {
     const nextStrike = defaultScalperStrike(scalperUnderlying)
     pendingScalperAtmSync.current = scalperUnderlying
-    setScalperCeStrikePrice(nextStrike)
-    setScalperPeStrikePrice(nextStrike)
+    const strikePreset = pendingScalperStrikePreset.current
+    if (strikePreset && strikePreset.underlying === scalperUnderlying) {
+      setScalperCeStrikePrice(strikePreset.ce)
+      setScalperPeStrikePrice(strikePreset.pe)
+      pendingScalperStrikePreset.current = null
+    } else {
+      if (strikePreset && strikePreset.underlying !== scalperUnderlying) {
+        pendingScalperStrikePreset.current = null
+      }
+      setScalperCeStrikePrice(nextStrike)
+      setScalperPeStrikePrice(nextStrike)
+    }
     if (pendingScalperExpiry.current !== null) {
       setScalperExpiry(pendingScalperExpiry.current)
       pendingScalperExpiry.current = null
@@ -1678,18 +1816,64 @@ export default function App() {
 
   useEffect(() => {
     if (view !== 'scalper' || pendingScalperAtmSync.current !== scalperUnderlying) return
-    if (!scalperSnapshot || scalperSnapshot.underlying.last_price == null) return
-    const instrumentName = `${scalperSnapshot.underlying.instrument} ${scalperSnapshot.underlying.display_name}`.toUpperCase()
+    if (!currentScalperSnapshot || currentScalperSnapshot.underlying.last_price == null) return
+    const instrumentName =
+      `${currentScalperSnapshot.underlying.instrument} ${currentScalperSnapshot.underlying.display_name}`.toUpperCase()
     if (!instrumentName.includes(scalperUnderlying)) return
-    const atmStrike = snapScalperStrike(scalperSnapshot.underlying.last_price, scalperUnderlying)
+    const atmStrike = snapScalperStrike(currentScalperSnapshot.underlying.last_price, scalperUnderlying)
     setScalperCeStrikePrice(atmStrike)
     setScalperPeStrikePrice(atmStrike)
     pendingScalperAtmSync.current = null
-  }, [view, scalperSnapshot, scalperUnderlying])
+  }, [view, currentScalperSnapshot, scalperUnderlying])
+
+  useEffect(() => {
+    if (view !== 'scalper' || !scalperSnapshot) return
+
+    const pair = scalperSnapshot.option_pair
+    const snapshotUnderlying = (pair.underlying || '').trim().toUpperCase()
+    if (!snapshotUnderlying || snapshotUnderlying !== scalperUnderlying.trim().toUpperCase()) return
+
+    const nextCeStrike = String(Number(pair.ce_strike_price) || '')
+    const nextPeStrike = String(Number(pair.pe_strike_price) || '')
+    const nextExpiry = formatExpiryInputValue(pair.expiry)
+
+    let changed = false
+    if (nextCeStrike && nextCeStrike !== scalperCeStrikePrice) {
+      setScalperCeStrikePrice(nextCeStrike)
+      changed = true
+    }
+    if (nextPeStrike && nextPeStrike !== scalperPeStrikePrice) {
+      setScalperPeStrikePrice(nextPeStrike)
+      changed = true
+    }
+    if ((nextExpiry || '') !== formatExpiryInputValue(scalperExpiry)) {
+      setScalperExpiry(nextExpiry)
+      changed = true
+    }
+
+    if (changed) {
+      pendingScalperAtmSync.current = null
+    }
+  }, [
+    view,
+    scalperSnapshot,
+    scalperUnderlying,
+    scalperCeStrikePrice,
+    scalperPeStrikePrice,
+    scalperExpiry,
+  ])
+
+  useEffect(() => {
+    if (view !== 'scalper') return
+    if (scalperExpiry && !isActiveExpiryValue(scalperExpiry)) {
+      setScalperExpiry('')
+    }
+  }, [view, scalperExpiry])
 
   useEffect(() => {
     if (view !== 'scalper') return
     const resolvedExpiry = formatExpiryInputValue(scalperOptionPair?.expiry)
+    if (resolvedExpiry && !isActiveExpiryValue(resolvedExpiry)) return
     if (!resolvedExpiry) return
     if (resolvedExpiry !== formatExpiryInputValue(scalperExpiry)) {
       setScalperExpiry(resolvedExpiry)
@@ -1698,6 +1882,7 @@ export default function App() {
 
   useEffect(() => {
     if (view !== 'scalper' || !session || session.is_demo) {
+      setScalperFeedRequested(false)
       setScalperSnapshot(null)
       setScalperSnapshotError('')
       setScalperSnapshotNotice('')
@@ -1713,6 +1898,11 @@ export default function App() {
       peStrike: scalperPeStrikePrice,
       expiry: normalizedScalperExpiry ?? '',
     })
+
+    setScalperFeedRequested(false)
+    setScalperSnapshot(null)
+    setScalperSnapshotError('')
+    setScalperSnapshotNotice('')
 
     // Show cached snapshot immediately for instant chart rendering
     const cachedSnapshot = loadCachedScalperSnapshot(cacheKeys)
@@ -1782,6 +1972,23 @@ export default function App() {
   ])
 
   useEffect(() => {
+    if (
+      view !== 'scalper' ||
+      !session ||
+      session.is_demo ||
+      !scalperSeedSnapshot ||
+      !Number.isFinite(parsedScalperCeStrike) ||
+      parsedScalperCeStrike <= 0 ||
+      !Number.isFinite(parsedScalperPeStrike) ||
+      parsedScalperPeStrike <= 0
+    ) {
+      return
+    }
+
+    setScalperFeedRequested(true)
+  }, [view, session, scalperSeedSnapshot, parsedScalperCeStrike, parsedScalperPeStrike])
+
+  useEffect(() => {
     if (view !== 'scalper' || !session || session.is_demo) {
       setDeltaNeutralPairs([])
       setDeltaNeutralMessage('')
@@ -1793,8 +2000,12 @@ export default function App() {
     const controller = new AbortController()
 
     async function loadDeltaNeutralPairs() {
-      setDeltaNeutralLoading(true)
-      setDeltaNeutralMessage('')
+      if (activeScalperTool === 'delta-neutral' || deltaNeutralPairs.length === 0) {
+        setDeltaNeutralLoading(true)
+      }
+      if (activeScalperTool === 'delta-neutral') {
+        setDeltaNeutralMessage('')
+      }
 
       try {
         const response = await fetch(`${API_BASE_URL}/api/scalper/delta-neutral`, {
@@ -1828,7 +2039,9 @@ export default function App() {
         )
       } catch (err) {
         if (controller.signal.aborted) return
-        setDeltaNeutralPairs([])
+        if (deltaNeutralPairs.length === 0) {
+          setDeltaNeutralPairs([])
+        }
         setDeltaNeutralMessage(err instanceof Error ? err.message : 'Failed to load delta neutral pairs.')
       } finally {
         if (!controller.signal.aborted) {
@@ -1838,9 +2051,23 @@ export default function App() {
     }
 
     void loadDeltaNeutralPairs()
+    const refreshId = window.setInterval(() => {
+      void loadDeltaNeutralPairs()
+    }, 30000)
 
-    return () => controller.abort()
-  }, [view, session, derivedDeviceId, scalperUnderlying, normalizedScalperExpiry])
+    return () => {
+      controller.abort()
+      window.clearInterval(refreshId)
+    }
+  }, [
+    view,
+    session,
+    derivedDeviceId,
+    scalperUnderlying,
+    normalizedScalperExpiry,
+    activeScalperTool,
+    deltaNeutralPairs.length,
+  ])
 
   useEffect(() => {
     if (view !== 'scalper' || !session || session.is_demo) {
@@ -1854,8 +2081,12 @@ export default function App() {
     const controller = new AbortController()
 
     async function loadScalperVolumeBreakout() {
-      setScalperVolumeBreakoutLoading(true)
-      setScalperVolumeBreakoutMessage('')
+      if (activeScalperTool === 'volume-breakout' || scalperVolumeBreakoutRows.length === 0) {
+        setScalperVolumeBreakoutLoading(true)
+      }
+      if (activeScalperTool === 'volume-breakout') {
+        setScalperVolumeBreakoutMessage('')
+      }
 
       try {
         const response = await fetch(`${API_BASE_URL}/api/scalper/volume-breakout`, {
@@ -1889,7 +2120,9 @@ export default function App() {
         )
       } catch (err) {
         if (controller.signal.aborted) return
-        setScalperVolumeBreakoutRows([])
+        if (scalperVolumeBreakoutRows.length === 0) {
+          setScalperVolumeBreakoutRows([])
+        }
         setScalperVolumeBreakoutMessage(err instanceof Error ? err.message : 'Failed to load volume breakout finder.')
       } finally {
         if (!controller.signal.aborted) {
@@ -1907,7 +2140,15 @@ export default function App() {
       controller.abort()
       window.clearInterval(refreshId)
     }
-  }, [view, session, derivedDeviceId, scalperInterval, scalperVolumeBreakoutLookbackDays])
+  }, [
+    view,
+    session,
+    derivedDeviceId,
+    scalperInterval,
+    scalperVolumeBreakoutLookbackDays,
+    activeScalperTool,
+    scalperVolumeBreakoutRows.length,
+  ])
 
   async function handleStart(event: FormEvent) {
     event.preventDefault()
@@ -1922,9 +2163,12 @@ export default function App() {
         body: JSON.stringify({ phone, environment: authEnvironment, auth_method: authMethod }),
       })
 
-      const data = (await response.json()) as StartResponse | ApiErrorPayload
+      const data = await parseJsonResponse<StartResponse | ApiErrorPayload>(response)
       if (!response.ok) {
         throw new Error(extractErrorMessage(data, 'Unable to start login flow.'))
+      }
+      if (!data) {
+        throw new Error('Login service returned an empty response.')
       }
 
       const result = data as StartResponse
@@ -2189,6 +2433,10 @@ export default function App() {
     ? 'Checking Session'
     : liveConnected
       ? 'Live Connected'
+      : !scalperSeedSnapshot
+        ? 'Loading Snapshot'
+      : !scalperFeedRequested
+        ? 'Auto Connecting'
       : liveError
         ? 'Feed Error'
         : 'Connecting'
@@ -2196,45 +2444,47 @@ export default function App() {
     ? '#f59e0b'
     : liveConnected
       ? '#22c55e'
+      : !scalperSeedSnapshot || !scalperFeedRequested
+        ? '#94a3b8'
       : liveError
         ? '#ef4444'
         : '#64748b'
-  const underlyingMeta = scalperPanelMeta?.underlying ?? (scalperSnapshot
+  const underlyingMeta = scalperPanelMeta?.underlying ?? (currentScalperSnapshot
     ? {
-        instrument: scalperSnapshot.underlying.instrument,
-        display_name: scalperSnapshot.underlying.display_name,
-        exchange: scalperSnapshot.underlying.exchange,
-        instrument_type: scalperSnapshot.underlying.instrument_type,
-        interval: scalperSnapshot.underlying.interval,
-        last_price: scalperSnapshot.underlying.last_price,
+        instrument: currentScalperSnapshot.underlying.instrument,
+        display_name: currentScalperSnapshot.underlying.display_name,
+        exchange: currentScalperSnapshot.underlying.exchange,
+        instrument_type: currentScalperSnapshot.underlying.instrument_type,
+        interval: currentScalperSnapshot.underlying.interval,
+        last_price: currentScalperSnapshot.underlying.last_price,
       }
     : null)
-  const callMeta = scalperPanelMeta?.call_option ?? (scalperSnapshot
+  const callMeta = scalperPanelMeta?.call_option ?? (currentScalperSnapshot
     ? {
-        instrument: scalperSnapshot.call_option.instrument,
-        display_name: scalperSnapshot.call_option.display_name,
-        exchange: scalperSnapshot.call_option.exchange,
-        instrument_type: scalperSnapshot.call_option.instrument_type,
-        interval: scalperSnapshot.call_option.interval,
-        last_price: scalperSnapshot.call_option.last_price,
+        instrument: currentScalperSnapshot.call_option.instrument,
+        display_name: currentScalperSnapshot.call_option.display_name,
+        exchange: currentScalperSnapshot.call_option.exchange,
+        instrument_type: currentScalperSnapshot.call_option.instrument_type,
+        interval: currentScalperSnapshot.call_option.interval,
+        last_price: currentScalperSnapshot.call_option.last_price,
       }
     : null)
-  const putMeta = scalperPanelMeta?.put_option ?? (scalperSnapshot
+  const putMeta = scalperPanelMeta?.put_option ?? (currentScalperSnapshot
     ? {
-        instrument: scalperSnapshot.put_option.instrument,
-        display_name: scalperSnapshot.put_option.display_name,
-        exchange: scalperSnapshot.put_option.exchange,
-        instrument_type: scalperSnapshot.put_option.instrument_type,
-        interval: scalperSnapshot.put_option.interval,
-        last_price: scalperSnapshot.put_option.last_price,
+        instrument: currentScalperSnapshot.put_option.instrument,
+        display_name: currentScalperSnapshot.put_option.display_name,
+        exchange: currentScalperSnapshot.put_option.exchange,
+        instrument_type: currentScalperSnapshot.put_option.instrument_type,
+        interval: currentScalperSnapshot.put_option.interval,
+        last_price: currentScalperSnapshot.put_option.last_price,
       }
     : null)
   const callFallbackCandles =
-    livePanelCandleCounts.call_option > 0 ? undefined : scalperSnapshot?.call_option.candles
+    livePanelCandleCounts.call_option > 0 ? undefined : currentScalperSnapshot?.call_option.candles
   const underlyingFallbackCandles =
-    livePanelCandleCounts.underlying > 0 ? undefined : scalperSnapshot?.underlying.candles
+    livePanelCandleCounts.underlying > 0 ? undefined : currentScalperSnapshot?.underlying.candles
   const putFallbackCandles =
-    livePanelCandleCounts.put_option > 0 ? undefined : scalperSnapshot?.put_option.candles
+    livePanelCandleCounts.put_option > 0 ? undefined : currentScalperSnapshot?.put_option.candles
   const callHasChartData = livePanelCandleCounts.call_option > 0 || Boolean(callFallbackCandles?.length)
   const underlyingHasChartData =
     livePanelCandleCounts.underlying > 0 || Boolean(underlyingFallbackCandles?.length)
@@ -2244,7 +2494,7 @@ export default function App() {
     : liveConnected
       ? 'Waiting for candle history...'
       : 'Loading candles...'
-  const scalperChartHeight = 248
+  const scalperChartHeight = 332
 
   // Ã¢â€â‚¬Ã¢â€â‚¬ OTP/MPIN cell state Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const otpCells = useRef<(HTMLInputElement | null)[]>([])
@@ -2535,8 +2785,9 @@ export default function App() {
     const putLots = sanitizePositiveInteger(scalperPutLots)
     const callEstimatedValue = (callMeta?.last_price ?? 0) * lotSize * callLots
     const putEstimatedValue = (putMeta?.last_price ?? 0) * lotSize * putLots
-    const callTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.call_ref_id || scalperValidating || !scalperExecutionSession
-    const putTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.put_ref_id || scalperValidating || !scalperExecutionSession
+    const scalperUatOnlyExecution = scalperExecutionEnvironment !== 'UAT'
+    const callTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.call_ref_id || scalperValidating || !scalperExecutionSession || scalperUatOnlyExecution
+    const putTradingDisabled = !session || !!session.is_demo || !activeOptionPair?.put_ref_id || scalperValidating || !scalperExecutionSession || scalperUatOnlyExecution
     const scalperExecutionLabel = scalperExecutionSession?.environment ?? scalperExecutionEnvironment
 
     return (
@@ -2554,7 +2805,7 @@ export default function App() {
               <span className="pill-v2">{scalperUnderlying}</span>
               <span className="pill-v2">{scalperInterval}</span>
               <span className="pill-v2" style={{ color: scalperFeedTone }}>
-                {scalperValidating ? 'Checking' : liveConnected ? 'Live' : liveError ? 'Feed Error' : 'Connecting'}
+                {scalperValidating ? 'Checking' : liveConnected ? 'Live' : !scalperSeedSnapshot ? 'Loading' : !scalperFeedRequested ? 'Auto' : liveError ? 'Feed Error' : 'Connecting'}
               </span>
             </div>
           </div>
@@ -2574,7 +2825,14 @@ export default function App() {
                   <div className="scalper-toolbar-group">
                     <label className="scalper-field">
                       <span>Underlying</span>
-                      <select value={scalperUnderlying} onChange={(event) => setScalperUnderlying(event.target.value)}>
+                      <select
+                        value={scalperUnderlying}
+                        onChange={(event) => {
+                          pendingScalperStrikePreset.current = null
+                          pendingScalperExpiry.current = null
+                          setScalperUnderlying(event.target.value)
+                        }}
+                      >
                         {(scalperUnderlyings as readonly string[]).includes(scalperUnderlying)
                           ? scalperUnderlyings.map((item) => (
                               <option key={item} value={item}>{item}</option>
@@ -2632,14 +2890,16 @@ export default function App() {
                       <span className="scalper-status-pill">{formatExpiryBadge(activeOptionPair?.expiry)}</span>
                       <span className="scalper-status-pill">Lot {activeOptionPair?.lot_size ?? '--'}</span>
                     </div>
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      disabled={scalperValidating}
-                      onClick={() => { void validateScalperSessionAndReconnect() }}
-                    >
-                      {scalperValidating ? 'Checking Session...' : liveConnected ? 'Reconnect Feed' : 'Connect Feed'}
-                    </button>
+                    {liveError || scalperValidating ? (
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={scalperValidating}
+                        onClick={() => { void validateScalperSessionAndReconnect() }}
+                      >
+                        {scalperValidating ? 'Checking Session...' : 'Reconnect Feed'}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
 
@@ -2758,6 +3018,7 @@ export default function App() {
                       <div><span>Call LTP</span><strong>{formatPrice(callMeta?.last_price)}</strong></div>
                       <div><span>Put LTP</span><strong>{formatPrice(putMeta?.last_price)}</strong></div>
                     </div>
+                    {scalperUatOnlyExecution ? <div className="msg-banner">Scalper order placement is enabled only in UAT for now.</div> : null}
                     {scalperTradeError ? <div className="err-banner">{scalperTradeError}</div> : null}
                     {scalperTradeMessage ? <div className="msg-banner">{scalperTradeMessage}</div> : null}
                   </article>
@@ -2825,13 +3086,15 @@ export default function App() {
                   >
                     Delta Neutral
                   </button>
-                  <button
-                    type="button"
-                    className={activeScalperTool === 'volume-breakout' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
-                    onClick={() => setActiveScalperTool('volume-breakout')}
-                  >
-                    Volume Breakout Finder
-                  </button>
+                  {DEMO_SHOW_SCALPER_VOLUME_BREAKOUT ? (
+                    <button
+                      type="button"
+                      className={activeScalperTool === 'volume-breakout' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
+                      onClick={() => setActiveScalperTool('volume-breakout')}
+                    >
+                      Volume Breakout Finder
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className={activeScalperTool === 'indicator-builder' ? 'scalper-tool-button is-active' : 'scalper-tool-button'}
@@ -2971,13 +3234,25 @@ export default function App() {
                                   if (desiredExpiry) {
                                     pendingScalperExpiry.current = desiredExpiry
                                   }
+                                  if (row.atm_strike != null) {
+                                    const strike = String(row.atm_strike)
+                                    pendingScalperStrikePreset.current =
+                                      row.underlying !== scalperUnderlying
+                                        ? {
+                                            underlying: row.underlying,
+                                            ce: strike,
+                                            pe: strike,
+                                          }
+                                        : null
+                                  } else {
+                                    pendingScalperStrikePreset.current = null
+                                  }
                                   setScalperUnderlying(row.underlying)
                                   if (row.atm_strike != null) {
                                     const strike = String(row.atm_strike)
                                     setScalperCeStrikePrice(strike)
                                     setScalperPeStrikePrice(strike)
                                   }
-                                  setActiveScalperTool('delta-neutral')
                                   setScalperReconnectNonce((value) => value + 1)
                                 }}
                               >
@@ -3034,22 +3309,23 @@ export default function App() {
                     onUpdate={indicatorHook.update}
                     theme={theme}
                   />
-                ) : (
-                  <AutomatePanel
-                    enabled={automateEnabled}
-                    onToggle={setAutomateEnabled}
-                    config={automateConfig}
+                  ) : (
+                    <AutomatePanel
+                      enabled={automateEnabled}
+                      onToggle={setAutomateEnabled}
+                      config={automateConfig}
                     onConfigChange={(next) => setAutomateConfig((prev) => ({ ...prev, ...next }))}
                     hasSignals={automationHasSignals}
                     position={automation.position}
-                    tradeCount={automation.tradeCount}
-                    log={automation.log}
-                    onClearLog={automation.clearLog}
-                    onResetPosition={automation.resetPosition}
-                    disabled={!session || !!session.is_demo}
-                  />
-                )}
-              </section>
+                      tradeCount={automation.tradeCount}
+                      log={automation.log}
+                      onClearLog={automation.clearLog}
+                      onResetPosition={automation.resetPosition}
+                      disabled={scalperAutomationDisabled}
+                      disabledReason={scalperAutomationDisabledReason || undefined}
+                    />
+                  )}
+                </section>
 
               <PostLoginFooter />
             </>

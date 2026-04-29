@@ -423,6 +423,7 @@ async def scalper_live_ws(websocket: WebSocket) -> None:
          with the last 12 authoritative candles for drift correction.
     """
     await websocket.accept()
+    raw: dict | None = None
     try:
         raw = await asyncio.wait_for(websocket.receive_json(), timeout=20.0)
         request = ScalperSnapshotRequest(**raw)
@@ -443,6 +444,10 @@ async def scalper_live_ws(websocket: WebSocket) -> None:
         return
 
     session = ScalperLiveSession(request=request)
+    if isinstance(raw, dict):
+        seed_snapshot = raw.get("seed_snapshot")
+        if isinstance(seed_snapshot, dict):
+            session.prime_from_seed_snapshot(seed_snapshot)
     await session.run(websocket)
 
 

@@ -24,6 +24,7 @@ interface AutomatePanelProps {
 
   /** Disable all controls (demo session, no session, etc.) */
   disabled?: boolean
+  disabledReason?: string
 }
 
 const PANEL_LABELS: Record<AutomatePanelType, string> = {
@@ -57,6 +58,7 @@ export default function AutomatePanel({
   onClearLog,
   onResetPosition,
   disabled = false,
+  disabledReason,
 }: AutomatePanelProps) {
   const maxTrades = Math.max(1, Math.floor(Number(config.maxTrades) || 10))
   const lots = Math.max(1, Math.floor(Number(config.lots) || 1))
@@ -95,11 +97,11 @@ export default function AutomatePanel({
       </div>
 
       {/* ── Warnings ── */}
-      {disabled && (
-        <div className="automate-warning">
-          A live (non-demo) session is required to use automation.
-        </div>
-      )}
+        {disabled && (
+          <div className="automate-warning">
+            {disabledReason ?? 'A live (non-demo) session is required to use automation.'}
+          </div>
+        )}
       {!hasSignals && !enabled && !disabled && (
         <div className="automate-warning">
           No indicator with a signal rule is active. Add a buy or sell signal condition in the

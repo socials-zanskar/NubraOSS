@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import logging
+import threading
+import time
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -33,6 +36,7 @@ from app.services.instrument_service import instrument_service
 from app.services.market_history_service import HistoricalFetchRequest, market_history_service
 
 IST = ZoneInfo("Asia/Kolkata")
+log = logging.getLogger(__name__)
 
 INDEX_UNDERLYINGS = {
     "NIFTY": ("NSE", "INDEX"),
@@ -71,6 +75,13 @@ class OptionContract:
 
 
 class ScalperService:
+    _UL_CACHE_TTL = 15.0
+
+    def __init__(self) -> None:
+        self._ul_cache: dict[str, tuple[float, object]] = {}
+        self._ul_cache_lock = threading.Lock()
+        self._log = log
+
     def _coerce_float(self, value: object) -> float | None:
         try:
             result = float(value)  # type: ignore[arg-type]
@@ -295,6 +306,15 @@ class ScalperService:
                 return normalized or text
         return None
 
+    def _today_expiry_floor(self) -> str:
+        return datetime.now(IST).strftime("%Y%m%d")
+
+    def _is_active_expiry(self, expiry_label: str | None) -> bool:
+        normalized = self._normalize_expiry_request(expiry_label)
+        if not normalized or not (len(normalized) == 8 and normalized.isdigit()):
+            return True
+        return normalized >= self._today_expiry_floor()
+
     def _iter_option_rows(self, request: ScalperSnapshotRequest) -> list[dict]:
         rows = instrument_service._get_cached_rows(request.session_token, request.environment, request.device_id)  # noqa: SLF001
         underlying = self._normalize_underlying(request.underlying)
@@ -355,11 +375,24 @@ class ScalperService:
                     tick_size=instrument_service._coerce_positive_int(row.get("tick_size")),  # noqa: SLF001
                 )
             )
+
+        active_rows = [row for row in normalized_rows if self._is_active_expiry(row.expiry_label)]
+        if active_rows:
+            normalized_rows = active_rows
+
+        if target_expiry and not self._is_active_expiry(target_expiry):
+            target_expiry = None
+
         if target_expiry:
-            normalized_rows = [row for row in normalized_rows if row.expiry_label == target_expiry]
-        elif normalized_rows:
+            matching_rows = [row for row in normalized_rows if row.expiry_label == target_expiry]
+            if matching_rows:
+                normalized_rows = matching_rows
+            else:
+                target_expiry = None
+
+        if not target_expiry and normalized_rows:
             nearest_expiry = min(
-                (row.expiry_label for row in normalized_rows if row.expiry_label),
+                (row.expiry_label for row in normalized_rows if row.expiry_label and self._is_active_expiry(row.expiry_label)),
                 key=self._expiry_sort_key,
                 default=None,
             )
@@ -1296,23 +1329,22 @@ class ScalperService:
 
         call_contract, put_contract = self._resolve_option_pair(request)
 
-        underlying_panel = self._build_panel(
+        underlying_frame = self._fetch_underlying_cached(
+            request=request,
+            instrument=underlying,
+            instrument_type=underlying_type,
+        )
+        underlying_panel = self._build_panel_with_frame(
             request=request,
             instrument=underlying,
             display_name=underlying,
             instrument_type=underlying_type,
+            frame=underlying_frame,
         )
-        call_panel = self._build_panel(
+        call_panel, put_panel = self._build_option_panels_batched(
             request=request,
-            instrument=call_contract.display_name,
-            display_name=call_contract.display_name,
-            instrument_type="OPT",
-        )
-        put_panel = self._build_panel(
-            request=request,
-            instrument=put_contract.display_name,
-            display_name=put_contract.display_name,
-            instrument_type="OPT",
+            call_symbol=call_contract.display_name,
+            put_symbol=put_contract.display_name,
         )
 
         option_pair = ScalperResolvedOptionPair(

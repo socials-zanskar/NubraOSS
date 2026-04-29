@@ -138,7 +138,7 @@ export default function ScalperLiveChart({
       rightPriceScale: {
         borderColor: palette.border,
         textColor: palette.scaleText,
-        scaleMargins: { top: 0.05, bottom: 0.28 },
+        scaleMargins: { top: 0.03, bottom: 0.08 },
       },
       timeScale: {
         borderColor: palette.border,
@@ -191,7 +191,7 @@ export default function ScalperLiveChart({
     })
 
     chart.priceScale('vol').applyOptions({
-      scaleMargins: { top: 0.72, bottom: 0.02 },
+      scaleMargins: { top: 0.9, bottom: 0.01 },
     })
 
     chartRef.current = chart

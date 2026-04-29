@@ -57,6 +57,10 @@ export interface UseScalperLiveParams {
   expiry: string | null
   lookback_days?: number
   reconnect_nonce?: number
+  seedSnapshot?: {
+    option_pair: OptionPair
+    panels: Record<Panel, PanelData>
+  } | null
 }
 
 export interface UseScalperLiveReturn {
@@ -168,6 +172,11 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
     setStatus('Connecting...')
     initReceivedRef.current = false
     lastErrorRef.current = ''
+    pendingInitRef.current = null
+    candlesRef.current = { underlying: [], call_option: [], put_option: [] }
+    setConnected(false)
+    setOptionPair(null)
+    setPanelMeta(null)
 
     ws.onopen = () => {
       ws.send(
@@ -182,6 +191,7 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
           pe_strike_price: params.pe_strike_price,
           expiry: params.expiry,
           lookback_days: params.lookback_days ?? 5,
+          seed_snapshot: params.seedSnapshot ?? undefined,
         }),
       )
     }
@@ -209,6 +219,10 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
       if (msgType === 'error') {
         const nextError = String(msg.message ?? 'Unknown scalper websocket error.')
         lastErrorRef.current = nextError
+        pendingInitRef.current = null
+        candlesRef.current = { underlying: [], call_option: [], put_option: [] }
+        setOptionPair(null)
+        setPanelMeta(null)
         setError(nextError)
         setStatus('')
         setConnected(false)
@@ -345,6 +359,8 @@ export function useScalperLive(params: UseScalperLiveParams): UseScalperLiveRetu
       candlesRef.current = { underlying: [], call_option: [], put_option: [] }
       initReceivedRef.current = false
       lastErrorRef.current = ''
+      setOptionPair(null)
+      setPanelMeta(null)
       setConnected(false)
       setStatus('')
       setError('')

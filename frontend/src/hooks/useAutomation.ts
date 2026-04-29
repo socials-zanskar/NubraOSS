@@ -113,6 +113,7 @@ export function useAutomation(params: UseAutomationParams): UseAutomationReturn 
   useEffect(() => {
     if (!params.enabled) return
     if (!params.session || !params.optionPair) return
+    if (params.session.environment !== 'UAT') return
     if (params.panelSignals.length === 0) return
 
     const maxTrades = Math.max(1, Math.floor(Number(params.config.maxTrades ?? 10) || 10))

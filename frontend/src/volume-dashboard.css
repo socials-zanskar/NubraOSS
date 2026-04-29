@@ -32,13 +32,29 @@
 .webhook-page-pills {
   margin-left: auto;
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .webhook-page-pills .execution-env-toggle {
   margin-right: 2px;
+  flex-wrap: nowrap;
+  align-self: center;
+}
+
+.webhook-page-pills .pill-v2 {
+  padding: 0 14px;
+  min-height: 36px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--bg-2);
+  border-color: var(--hairline);
+  box-shadow: none;
 }
 
 .execution-env-toggle {
@@ -55,6 +71,14 @@
   min-width: auto;
   padding: 7px 12px;
   border-radius: 999px;
+}
+
+.webhook-page-pills .execution-env-toggle .indicator-box {
+  flex: 0 0 auto;
+  min-width: 92px;
+  max-width: none;
+  padding: 9px 16px;
+  font-size: 0.82rem;
 }
 
 .execution-env-button {
@@ -1204,6 +1228,12 @@
   grid-column: 1 / -1;
 }
 
+.webhook-main .sb-card,
+.webhook-main .sb-card-head,
+.webhook-main .sb-card-head > div:first-child {
+  min-width: 0;
+}
+
 .webhook-head-metrics {
   display: flex;
   gap: 8px;
@@ -1363,10 +1393,16 @@
 .mode-toggle {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .mode-toggle .indicator-box {
-  min-width: 138px;
+  flex: 1 1 120px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .code-card {
@@ -1419,10 +1455,12 @@
 }
 
 .webhook-log-item {
+  min-width: 0;
   padding: 16px;
   border: 1px solid var(--hairline);
   border-radius: 14px;
   background: var(--bg-2);
+  overflow: hidden;
 }
 
 .webhook-log-item.success {
@@ -1440,18 +1478,23 @@
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .webhook-log-head strong {
+  flex: 1 1 220px;
+  min-width: 0;
   font-size: 0.88rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
 .webhook-log-head span {
+  flex: 0 1 auto;
   color: var(--fg-faint);
   font-size: 0.72rem;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .history-meta-row {

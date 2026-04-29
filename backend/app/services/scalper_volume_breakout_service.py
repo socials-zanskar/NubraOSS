@@ -60,14 +60,16 @@ INDEX_HISTORY_SYMBOL_ALIASES = {
 }
 
 # Concurrency cap for parallel history fetches
-_SCAN_SEMAPHORE_SLOTS = 20
+_SCAN_SEMAPHORE_SLOTS = 10
 _MIN_BASELINE_SESSIONS = 3
 _MIN_BREAKOUT_VOLUME_RATIO = 1.5
+_MAX_DISCOVERED_UNDERLYINGS = 48
+_HOT_CACHE_TTL_SECONDS = 45
 
 
 class ScalperVolumeBreakoutService:
     # In-memory last-good result cache keyed by (exchange, lookback_days)
-    _last_good_cache: dict[tuple[str, int], _CacheEntry] = {}
+    _last_good_cache: dict[tuple[str, str, int], _CacheEntry] = {}
     _baseline_cache: dict[tuple[str, str, str, int], _BaselineCacheEntry] = {}
 
     def _coerce_float(self, value: object) -> float | None:
@@ -506,7 +508,7 @@ class ScalperVolumeBreakoutService:
             request.session_token, request.environment, request.device_id
         )
 
-        seen: dict[str, str] = {}  # symbol -> instrument_type
+        seen: dict[str, tuple[str, int]] = {}  # symbol -> (instrument_type, option_row_count)
         for row in rows:
             exchange = str(row.get("exchange") or "").strip().upper()
             if exchange != request.exchange:
@@ -521,14 +523,22 @@ class ScalperVolumeBreakoutService:
             if not asset:
                 continue
 
-            if asset not in seen:
-                # If it's a known index, label it INDEX; otherwise STOCK
-                if asset in INDEX_UNDERLYINGS:
-                    seen[asset] = "INDEX"
-                else:
-                    seen[asset] = "STOCK"
+            instrument_type = "INDEX" if asset in INDEX_UNDERLYINGS else "STOCK"
+            previous = seen.get(asset)
+            if previous is None:
+                seen[asset] = (instrument_type, 1)
+            else:
+                seen[asset] = (previous[0], previous[1] + 1)
 
-        return list(seen.items())
+        prioritized = sorted(
+            seen.items(),
+            key=lambda item: (
+                0 if item[1][0] == "INDEX" else 1,
+                -item[1][1],
+                item[0],
+            ),
+        )
+        return [(symbol, instrument_type) for symbol, (instrument_type, _) in prioritized[:_MAX_DISCOVERED_UNDERLYINGS]]
 
     # ── Per-underlying scan (runs in thread pool via asyncio) ─────────────────
 
@@ -673,6 +683,29 @@ class ScalperVolumeBreakoutService:
     # ── Public entry point ────────────────────────────────────────────────────
 
     def volume_breakout_finder(self, request: ScalperVolumeBreakoutRequest) -> ScalperVolumeBreakoutResponse:
+        cache_key = (request.exchange, request.interval, request.lookback_days)
+        cached = ScalperVolumeBreakoutService._last_good_cache.get(cache_key)
+        if cached and cached.interval == request.interval:
+            cache_age_seconds = (datetime.now(IST) - cached.scanned_at).total_seconds()
+            if cache_age_seconds <= _HOT_CACHE_TTL_SECONDS:
+                age_seconds = max(int(cache_age_seconds), 0)
+                logger.info(
+                    "volume_breakout_finder: serving hot cache (%ss old, %d rows) for %s %s",
+                    age_seconds,
+                    len(cached.rows),
+                    request.exchange,
+                    request.interval,
+                )
+                return ScalperVolumeBreakoutResponse(
+                    status="success",
+                    message=(
+                        f"Showing warm scanner snapshot ({age_seconds}s old) "
+                        f"with {len(cached.rows)} ranked underlyings."
+                    ),
+                    lookback_days=request.lookback_days,
+                    rows=cached.rows,
+                )
+
         # 1. Discover all option-tradable underlyings dynamically
         candidates = self._discover_option_underlyings(request)
 
@@ -713,8 +746,6 @@ class ScalperVolumeBreakoutService:
         for rank, row in enumerate(breakout_rows[: request.limit], start=1):
             row.rank = rank
             rows.append(row)
-
-        cache_key = (request.exchange, request.lookback_days)
 
         # 5. If we got live results — store in cache and return them
         if rows:
