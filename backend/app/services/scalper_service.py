@@ -338,7 +338,25 @@ class ScalperService:
             option_rows.append(row)
         return option_rows
 
-    def _resolve_option_pair(self, request: ScalperSnapshotRequest) -> tuple[OptionContract, OptionContract]:
+    def _get_scalper_snapshot_spot(self, request: ScalperSnapshotRequest) -> float | None:
+        return self._get_underlying_spot(
+            DeltaNeutralPairsRequest(
+                session_token=request.session_token,
+                device_id=request.device_id,
+                environment=request.environment,
+                underlying=request.underlying,
+                exchange=request.exchange,
+                expiry=request.expiry,
+                limit=5,
+            )
+        )
+
+    def _resolve_option_pair(
+        self,
+        request: ScalperSnapshotRequest,
+        *,
+        spot_price: float | None = None,
+    ) -> tuple[OptionContract, OptionContract]:
         option_rows = self._iter_option_rows(request)
         if not option_rows:
             raise HTTPException(status_code=404, detail=f"No option contracts found for {request.underlying} on {request.exchange}.")
@@ -352,8 +370,18 @@ class ScalperService:
         if not call_candidates or not put_candidates:
             raise HTTPException(status_code=404, detail="Could not resolve both CE and PE contracts for the selected strike.")
 
-        call = min(call_candidates, key=lambda row: (abs(row.strike_price - int(request.ce_strike_price)), row.expiry_label or "", row.display_name))
-        put = min(put_candidates, key=lambda row: (abs(row.strike_price - int(request.pe_strike_price)), row.expiry_label or "", row.display_name))
+        candidate_strikes = sorted({row.strike_price for row in normalized_rows})
+        fallback_atm_strike = candidate_strikes[len(candidate_strikes) // 2] if candidate_strikes else 1
+        resolved_atm_strike = (
+            min(candidate_strikes, key=lambda strike: abs(strike - spot_price))
+            if candidate_strikes and spot_price is not None
+            else fallback_atm_strike
+        )
+        requested_ce_strike = int(request.ce_strike_price) if int(request.ce_strike_price) > 1 else resolved_atm_strike
+        requested_pe_strike = int(request.pe_strike_price) if int(request.pe_strike_price) > 1 else resolved_atm_strike
+
+        call = min(call_candidates, key=lambda row: (abs(row.strike_price - requested_ce_strike), row.expiry_label or "", row.display_name))
+        put = min(put_candidates, key=lambda row: (abs(row.strike_price - requested_pe_strike), row.expiry_label or "", row.display_name))
         return call, put
 
     def _normalize_option_contracts(self, option_rows: list[dict], expiry: str | None) -> list[OptionContract]:
@@ -1327,13 +1355,18 @@ class ScalperService:
             # Stock / ETF underlying — accept whatever exchange the client sent
             underlying_type = "STOCK"
 
-        call_contract, put_contract = self._resolve_option_pair(request)
-
         underlying_frame = self._fetch_underlying_cached(
             request=request,
             instrument=underlying,
             instrument_type=underlying_type,
         )
+        underlying_spot = self._get_scalper_snapshot_spot(request)
+        if underlying_spot is None and underlying_frame is not None and not underlying_frame.empty:
+            latest_close = self._coerce_float(underlying_frame.iloc[-1].get("close"))
+            underlying_spot = latest_close
+
+        call_contract, put_contract = self._resolve_option_pair(request, spot_price=underlying_spot)
+
         underlying_panel = self._build_panel_with_frame(
             request=request,
             instrument=underlying,
@@ -1351,8 +1384,8 @@ class ScalperService:
             underlying=underlying,
             exchange=request.exchange,
             expiry=call_contract.expiry_label or put_contract.expiry_label,
-            ce_strike_price=request.ce_strike_price,
-            pe_strike_price=request.pe_strike_price,
+            ce_strike_price=call_contract.strike_price,
+            pe_strike_price=put_contract.strike_price,
             call_ref_id=call_contract.ref_id,
             put_ref_id=put_contract.ref_id,
             call_display_name=call_contract.display_name,

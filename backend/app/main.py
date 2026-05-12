@@ -333,6 +333,9 @@ def get_strategy_preview(payload: StrategyPreviewRequest) -> StrategyPreviewResp
 
 @app.post("/api/strategy/live/start", response_model=StrategyLiveStartResponse)
 def start_strategy_live(payload: StrategyLiveStartRequest) -> StrategyLiveStartResponse:
+    if payload.environment != "UAT":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="No Code live strategy deployment is enabled only in UAT for now.")
     snapshot = strategy_live_service.start(
         strategy_payload=payload.strategy,
         session_token=payload.session_token,

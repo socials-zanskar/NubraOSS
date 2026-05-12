@@ -1098,6 +1098,10 @@ export default function App() {
   const parsedScalperCeStrike = Number(scalperCeStrikePrice)
   const parsedScalperPeStrike = Number(scalperPeStrikePrice)
   const normalizedScalperExpiry = normalizeExpiryValue(scalperExpiry)
+  const scalperAutoAtmRequested =
+    view === 'scalper' && pendingScalperAtmSync.current === scalperUnderlying
+  const scalperRequestedCeStrike = scalperAutoAtmRequested ? 1 : parsedScalperCeStrike || 1
+  const scalperRequestedPeStrike = scalperAutoAtmRequested ? 1 : parsedScalperPeStrike || 1
   const scalperExecutionSession = getExecutionSession(scalperExecutionEnvironment)
   const webhookExecutionSession = getExecutionSession(webhookExecutionEnvironment)
   const scalperSnapshotMatchesSelection = snapshotMatchesScalperSelection({
@@ -1816,50 +1820,69 @@ export default function App() {
 
   useEffect(() => {
     if (view !== 'scalper' || pendingScalperAtmSync.current !== scalperUnderlying) return
-    if (!currentScalperSnapshot || currentScalperSnapshot.underlying.last_price == null) return
-    const instrumentName =
-      `${currentScalperSnapshot.underlying.instrument} ${currentScalperSnapshot.underlying.display_name}`.toUpperCase()
-    if (!instrumentName.includes(scalperUnderlying)) return
-    const atmStrike = snapScalperStrike(currentScalperSnapshot.underlying.last_price, scalperUnderlying)
-    setScalperCeStrikePrice(atmStrike)
-    setScalperPeStrikePrice(atmStrike)
-    pendingScalperAtmSync.current = null
-  }, [view, currentScalperSnapshot, scalperUnderlying])
-
-  useEffect(() => {
-    if (view !== 'scalper' || !scalperSnapshot) return
-
+    if (!scalperSnapshot) return
     const pair = scalperSnapshot.option_pair
     const snapshotUnderlying = (pair.underlying || '').trim().toUpperCase()
     if (!snapshotUnderlying || snapshotUnderlying !== scalperUnderlying.trim().toUpperCase()) return
+    const resolvedCeStrike = String(Number(pair.ce_strike_price) || '')
+    const resolvedPeStrike = String(Number(pair.pe_strike_price) || '')
+    const resolvedExpiry = formatExpiryInputValue(pair.expiry)
+    if (resolvedCeStrike && resolvedPeStrike) {
+      setScalperCeStrikePrice(resolvedCeStrike)
+      setScalperPeStrikePrice(resolvedPeStrike)
+      if ((resolvedExpiry || '') !== formatExpiryInputValue(scalperExpiry)) {
+        setScalperExpiry(resolvedExpiry)
+      }
+      pendingScalperAtmSync.current = null
+      return
+    }
+    if (scalperSnapshot.underlying.last_price == null) return
+    const instrumentName =
+      `${scalperSnapshot.underlying.instrument} ${scalperSnapshot.underlying.display_name}`.toUpperCase()
+    if (!instrumentName.includes(scalperUnderlying)) return
+    const atmStrike = snapScalperStrike(scalperSnapshot.underlying.last_price, scalperUnderlying)
+    setScalperCeStrikePrice(atmStrike)
+    setScalperPeStrikePrice(atmStrike)
+    pendingScalperAtmSync.current = null
+  }, [view, scalperSnapshot, scalperUnderlying, scalperExpiry])
 
-    const nextCeStrike = String(Number(pair.ce_strike_price) || '')
-    const nextPeStrike = String(Number(pair.pe_strike_price) || '')
+  function setManualScalperCeStrikePrice(nextValue: string) {
+    pendingScalperAtmSync.current = null
+    setScalperCeStrikePrice(nextValue.replace(/[^\d]/g, ''))
+  }
+
+  function setManualScalperPeStrikePrice(nextValue: string) {
+    pendingScalperAtmSync.current = null
+    setScalperPeStrikePrice(nextValue.replace(/[^\d]/g, ''))
+  }
+
+  function stepScalperCeStrike(delta: -1 | 1) {
+    pendingScalperAtmSync.current = null
+    setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, delta))
+  }
+
+  function stepScalperPeStrike(delta: -1 | 1) {
+    pendingScalperAtmSync.current = null
+    setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, delta))
+  }
+
+  useEffect(() => {
+    if (view !== 'scalper' || !currentScalperSnapshot) return
+
+    const pair = currentScalperSnapshot.option_pair
+    const snapshotUnderlying = (pair.underlying || '').trim().toUpperCase()
+    if (!snapshotUnderlying || snapshotUnderlying !== scalperUnderlying.trim().toUpperCase()) return
+
     const nextExpiry = formatExpiryInputValue(pair.expiry)
 
-    let changed = false
-    if (nextCeStrike && nextCeStrike !== scalperCeStrikePrice) {
-      setScalperCeStrikePrice(nextCeStrike)
-      changed = true
-    }
-    if (nextPeStrike && nextPeStrike !== scalperPeStrikePrice) {
-      setScalperPeStrikePrice(nextPeStrike)
-      changed = true
-    }
     if ((nextExpiry || '') !== formatExpiryInputValue(scalperExpiry)) {
       setScalperExpiry(nextExpiry)
-      changed = true
-    }
-
-    if (changed) {
       pendingScalperAtmSync.current = null
     }
   }, [
     view,
-    scalperSnapshot,
+    currentScalperSnapshot,
     scalperUnderlying,
-    scalperCeStrikePrice,
-    scalperPeStrikePrice,
     scalperExpiry,
   ])
 
@@ -1894,8 +1917,8 @@ export default function App() {
     const cacheKeys = scalperSnapshotCacheKeys({
       underlying: scalperUnderlying,
       interval: scalperInterval,
-      ceStrike: scalperCeStrikePrice,
-      peStrike: scalperPeStrikePrice,
+      ceStrike: String(scalperRequestedCeStrike),
+      peStrike: String(scalperRequestedPeStrike),
       expiry: normalizedScalperExpiry ?? '',
     })
 
@@ -1919,13 +1942,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_token: activeSession.access_token,
-          device_id: derivedDeviceId,
-          environment: DATA_ENVIRONMENT,
+            device_id: derivedDeviceId,
+            environment: DATA_ENVIRONMENT,
           underlying: scalperUnderlying,
           exchange: 'NSE',
             interval: scalperInterval,
-            ce_strike_price: parsedScalperCeStrike || 1,
-            pe_strike_price: parsedScalperPeStrike || 1,
+            ce_strike_price: scalperRequestedCeStrike,
+            pe_strike_price: scalperRequestedPeStrike,
             expiry: normalizedScalperExpiry,
             lookback_days: 5,
           }),
@@ -1977,16 +2000,16 @@ export default function App() {
       !session ||
       session.is_demo ||
       !scalperSeedSnapshot ||
-      !Number.isFinite(parsedScalperCeStrike) ||
-      parsedScalperCeStrike <= 0 ||
-      !Number.isFinite(parsedScalperPeStrike) ||
-      parsedScalperPeStrike <= 0
+      !Number.isFinite(scalperRequestedCeStrike) ||
+      scalperRequestedCeStrike <= 0 ||
+      !Number.isFinite(scalperRequestedPeStrike) ||
+      scalperRequestedPeStrike <= 0
     ) {
       return
     }
 
     setScalperFeedRequested(true)
-  }, [view, session, scalperSeedSnapshot, parsedScalperCeStrike, parsedScalperPeStrike])
+  }, [view, session, scalperSeedSnapshot, scalperRequestedCeStrike, scalperRequestedPeStrike])
 
   useEffect(() => {
     if (view !== 'scalper' || !session || session.is_demo) {
@@ -2519,37 +2542,41 @@ export default function App() {
   const currentStep = step === 'start' ? 0 : step === 'otp' || step === 'totp' ? 1 : 2
 
   // Ã¢â€â‚¬Ã¢â€â‚¬ Routing Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-  if (view === 'no-code') {
-    const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
-    return (
-      <StrategyBuilder
-        apiBaseUrl={API_BASE_URL}
-        sessionToken={session?.access_token ?? ''}
-        deviceId={derivedDeviceId}
-        dataEnvironment={DATA_ENVIRONMENT}
-        executionEnvironment={noCodeExecutionEnvironment}
-        executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
-        executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
-        onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
-        onBack={() => setView('dashboard')}
+    if (view === 'no-code') {
+      const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
+      return (
+        <StrategyBuilder
+          apiBaseUrl={API_BASE_URL}
+          sessionToken={session?.access_token ?? ''}
+          deviceId={derivedDeviceId}
+          dataEnvironment={DATA_ENVIRONMENT}
+          prodSessionActive={hasExecutionEnvironmentSession('PROD')}
+          uatExecutionSessionActive={hasExecutionEnvironmentSession('UAT')}
+          executionEnvironment={noCodeExecutionEnvironment}
+          executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
+          executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
+          onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
+          onBack={() => setView('dashboard')}
         renderNav={(activeTab: string) => renderDashboardNav(activeTab)}
       />
     )
   }
 
-  if (view === 'backtest-lab') {
-    const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
-    return (
-      <StrategyBuilder
-        apiBaseUrl={API_BASE_URL}
-        sessionToken={session?.access_token ?? ''}
-        deviceId={derivedDeviceId}
-        dataEnvironment={DATA_ENVIRONMENT}
-        executionEnvironment={noCodeExecutionEnvironment}
-        executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
-        executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
-        onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
-        onBack={() => setView('dashboard')}
+    if (view === 'backtest-lab') {
+      const noCodeExecutionSession = getExecutionSession(noCodeExecutionEnvironment)
+      return (
+        <StrategyBuilder
+          apiBaseUrl={API_BASE_URL}
+          sessionToken={session?.access_token ?? ''}
+          deviceId={derivedDeviceId}
+          dataEnvironment={DATA_ENVIRONMENT}
+          prodSessionActive={hasExecutionEnvironmentSession('PROD')}
+          uatExecutionSessionActive={hasExecutionEnvironmentSession('UAT')}
+          executionEnvironment={noCodeExecutionEnvironment}
+          executionSessionToken={noCodeExecutionSession?.access_token ?? ''}
+          executionDeviceId={noCodeExecutionSession?.device_id ?? ''}
+          onExecutionEnvironmentSelect={handleNoCodeExecutionEnvironmentSelect}
+          onBack={() => setView('dashboard')}
         renderNav={(activeTab: string) => renderDashboardNav(activeTab)}
         mode="backtest"
       />
@@ -2853,25 +2880,25 @@ export default function App() {
                     <label className="scalper-field">
                       <span>CE Strike</span>
                       <div className="scalper-step-input">
-                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <button type="button" onClick={() => stepScalperCeStrike(-1)}>-</button>
                         <input
                           value={scalperCeStrikePrice}
-                          onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          onChange={(event) => setManualScalperCeStrikePrice(event.target.value)}
                           placeholder="24300"
                         />
-                        <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        <button type="button" onClick={() => stepScalperCeStrike(1)}>+</button>
                       </div>
                     </label>
                     <label className="scalper-field">
                       <span>PE Strike</span>
                       <div className="scalper-step-input">
-                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
+                        <button type="button" onClick={() => stepScalperPeStrike(-1)}>-</button>
                         <input
                           value={scalperPeStrikePrice}
-                          onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))}
+                          onChange={(event) => setManualScalperPeStrikePrice(event.target.value)}
                           placeholder="24300"
                         />
-                        <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                        <button type="button" onClick={() => stepScalperPeStrike(1)}>+</button>
                       </div>
                     </label>
                     <label className="scalper-field">
@@ -2973,9 +3000,9 @@ export default function App() {
                       <label className="scalper-field compact">
                         <span>Strike</span>
                         <div className="scalper-step-input">
-                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
-                          <input value={scalperCeStrikePrice} onChange={(event) => setScalperCeStrikePrice(event.target.value.replace(/[^\d]/g, ''))} />
-                          <button type="button" onClick={() => setScalperCeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                          <button type="button" onClick={() => stepScalperCeStrike(-1)}>-</button>
+                          <input value={scalperCeStrikePrice} onChange={(event) => setManualScalperCeStrikePrice(event.target.value)} />
+                          <button type="button" onClick={() => stepScalperCeStrike(1)}>+</button>
                         </div>
                       </label>
                       <label className="scalper-field compact">
@@ -3032,9 +3059,9 @@ export default function App() {
                       <label className="scalper-field compact">
                         <span>Strike</span>
                         <div className="scalper-step-input">
-                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, -1))}>-</button>
-                          <input value={scalperPeStrikePrice} onChange={(event) => setScalperPeStrikePrice(event.target.value.replace(/[^\d]/g, ''))} />
-                          <button type="button" onClick={() => setScalperPeStrikePrice((current) => adjustScalperStrike(current, scalperUnderlying, 1))}>+</button>
+                          <button type="button" onClick={() => stepScalperPeStrike(-1)}>-</button>
+                          <input value={scalperPeStrikePrice} onChange={(event) => setManualScalperPeStrikePrice(event.target.value)} />
+                          <button type="button" onClick={() => stepScalperPeStrike(1)}>+</button>
                         </div>
                       </label>
                       <label className="scalper-field compact">

@@ -240,6 +240,8 @@ interface Props {
   sessionToken: string
   deviceId: string
   dataEnvironment: Environment
+  prodSessionActive: boolean
+  uatExecutionSessionActive: boolean
   executionEnvironment: Environment
   executionSessionToken: string
   executionDeviceId: string
@@ -664,6 +666,8 @@ export default function StrategyBuilder({
   sessionToken,
   deviceId,
   dataEnvironment,
+  prodSessionActive,
+  uatExecutionSessionActive,
   executionEnvironment,
   executionSessionToken,
   executionDeviceId,
@@ -672,6 +676,16 @@ export default function StrategyBuilder({
   renderNav,
   mode = 'full',
 }: Props) {
+  const startDateRef = useRef<HTMLInputElement | null>(null)
+  const endDateRef = useRef<HTMLInputElement | null>(null)
+  const openNativeDatePicker = useCallback((input: HTMLInputElement | null) => {
+    if (!input) return
+    input.focus()
+    if (typeof input.showPicker === 'function') {
+      input.showPicker()
+    }
+  }, [])
+
   const isBacktestMode = mode === 'backtest'
   const pageTitle = isBacktestMode ? 'Backtest Lab' : 'No Code'
   const pageCrumb = pageTitle
@@ -696,7 +710,7 @@ export default function StrategyBuilder({
   const [strategyName, setStrategyName] = useState('')
 
   const [entrySide, setEntrySide] = useState<'BUY' | 'SELL'>('BUY')
-  const [entryGroup, setEntryGroup] = useState<ConditionGroupState | null>(null)
+  const [entryGroup, setEntryGroup] = useState<ConditionGroupState | null>(() => createConditionGroup('AND', []))
   const [entryIndicatorSearchQuery, setEntryIndicatorSearchQuery] = useState('')
   const [entryIndicatorSearchOpen, setEntryIndicatorSearchOpen] = useState(false)
   const [entryIndicatorSearchActiveIndex, setEntryIndicatorSearchActiveIndex] = useState(0)
@@ -704,7 +718,7 @@ export default function StrategyBuilder({
 
   type ExitMode = 'condition' | 'sl_tgt' | 'both'
   const [exitMode, setExitMode] = useState<ExitMode>('condition')
-  const [exitGroup, setExitGroup] = useState<ConditionGroupState | null>(null)
+  const [exitGroup, setExitGroup] = useState<ConditionGroupState | null>(() => createConditionGroup('OR', []))
   const [stopLossPct, setStopLossPct] = useState('2')
   const [targetPct, setTargetPct] = useState('4')
 
@@ -745,7 +759,6 @@ export default function StrategyBuilder({
   const [liveStatus, setLiveStatus] = useState<StrategyLiveStatus | null>(null)
   const [liveBusy, setLiveBusy] = useState(false)
   const [liveError, setLiveError] = useState('')
-  const [showProdConfirm, setShowProdConfirm] = useState(false)
   const [exitDefaultsSeeded, setExitDefaultsSeeded] = useState(false)
   const primaryInstrument = instruments[0] ?? ''
 
@@ -1701,6 +1714,10 @@ export default function StrategyBuilder({
   }
 
   async function _doDeployLive() {
+    if (executionEnvironment !== 'UAT') {
+      setLiveError('No Code live execution is enabled only in UAT for now.')
+      return
+    }
     setLiveBusy(true)
     try {
       const response = await fetch(`${apiBaseUrl}/api/strategy/live/start`, {
@@ -1736,15 +1753,10 @@ export default function StrategyBuilder({
       setLiveError(`Authenticate your ${executionEnvironment} execution session before deploying live.`)
       return
     }
-    if (executionEnvironment === 'PROD') {
-      setShowProdConfirm(true)
+    if (executionEnvironment !== 'UAT') {
+      setLiveError('No Code live execution is enabled only in UAT for now. Switch execution to UAT to deploy.')
       return
     }
-    void _doDeployLive()
-  }
-
-  function handleProdConfirm() {
-    setShowProdConfirm(false)
     void _doDeployLive()
   }
 
@@ -1808,50 +1820,8 @@ export default function StrategyBuilder({
           <h1 className="hero-title subview-page-title">{pageTitle}</h1>
           <p className="hero-sub subview-page-subtitle">{subtitle}</p>
         </div>
-        {actions ? <div className="subview-page-pills">{actions}</div> : null}
+        {actions ? <div className="subview-page-pills strategy-page-head-pills">{actions}</div> : null}
       </section>
-    )
-  }
-
-  if (showProdConfirm) {
-    return (
-      <div className="subview-shell">
-        {renderNav('Dashboard')}
-        <main className="subview-main strategy-builder-subview-main">
-          {renderPageHeader('Build, backtest, and deploy rule-based strategies.')}
-          <section className="dashboard-module-card strategy-card" style={{ maxWidth: 480, margin: '4rem auto', textAlign: 'center' }}>
-            <header className="strategy-card-head" style={{ justifyContent: 'center' }}>
-              <h2 style={{ color: 'var(--color-neg, #ef4444)' }}>Deploy to PROD?</h2>
-            </header>
-            <p style={{ margin: '1rem 0 0.5rem' }}>
-              You are about to deploy this strategy live on <strong>Production</strong>.
-            </p>
-            <p style={{ margin: '0 0 1.5rem', fontSize: '0.85rem', opacity: 0.7 }}>
-              Real orders will be placed on the exchange using your live account. This involves real financial risk. Confirm only if you have tested this strategy in UAT and are ready to trade live.
-            </p>
-            <div className="strategy-actions" style={{ justifyContent: 'center', gap: '1rem' }}>
-              <button
-                className="primary-button"
-                type="button"
-                style={{ background: 'var(--color-neg, #ef4444)', borderColor: 'var(--color-neg, #ef4444)' }}
-                onClick={handleProdConfirm}
-                disabled={liveBusy}
-              >
-                {liveBusy ? 'Deploying...' : 'Yes, Deploy to PROD'}
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setShowProdConfirm(false)}
-                disabled={liveBusy}
-              >
-                Cancel
-              </button>
-            </div>
-          </section>
-          <PostLoginFooter />
-        </main>
-      </div>
     )
   }
 
@@ -2424,16 +2394,42 @@ export default function StrategyBuilder({
     )
   }
 
+  const executionStatusToggle = !isBacktestMode ? (
+    <div className="mode-toggle execution-env-toggle" role="tablist" aria-label="No Code execution environment">
+      <button
+        type="button"
+        className={executionEnvironment === 'PROD' ? 'indicator-box execution-env-button active' : 'indicator-box execution-env-button'}
+        onClick={() => onExecutionEnvironmentSelect('PROD')}
+      >
+        <span className={prodSessionActive ? 'execution-env-dot is-connected' : 'execution-env-dot is-disconnected'} aria-hidden="true" />
+        PROD
+      </button>
+      <button
+        type="button"
+        className={executionEnvironment === 'UAT' ? 'indicator-box execution-env-button active' : 'indicator-box execution-env-button'}
+        onClick={() => onExecutionEnvironmentSelect('UAT')}
+      >
+        <span className={uatExecutionSessionActive ? 'execution-env-dot is-connected' : 'execution-env-dot is-disconnected'} aria-hidden="true" />
+        UAT
+      </button>
+    </div>
+  ) : null
+
   return (
     <div className="subview-shell">
       {renderNav('Dashboard')}
       <main className={`subview-main strategy-builder-subview-main strategy-builder-workspace${isBacktestMode ? ' backtest-lab-main' : ''}`}>
         {renderPageHeader(
           pageSubtitle,
-          !isBacktestMode && liveStatus?.running ? (
-            <button type="button" className="secondary-button" onClick={handleStopLive} disabled={liveBusy}>
-              {liveBusy ? 'Stopping...' : 'Stop Live'}
-            </button>
+          !isBacktestMode ? (
+            <div className="strategy-page-head-status">
+              {executionStatusToggle}
+              {liveStatus?.running ? (
+                <button type="button" className="secondary-button" onClick={handleStopLive} disabled={liveBusy}>
+                  {liveBusy ? 'Stopping...' : 'Stop Live'}
+                </button>
+              ) : null}
+            </div>
           ) : undefined,
         )}
 
@@ -2838,11 +2834,27 @@ export default function StrategyBuilder({
               </div>
               <div className="field-group">
                 <span>Start Date</span>
-                <input className="field-input" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                <input
+                  ref={startDateRef}
+                  className="field-input is-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  onClick={() => openNativeDatePicker(startDateRef.current)}
+                  onFocus={() => openNativeDatePicker(startDateRef.current)}
+                />
               </div>
               <div className="field-group">
                 <span>End Date</span>
-                <input className="field-input" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                <input
+                  ref={endDateRef}
+                  className="field-input is-date"
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  onClick={() => openNativeDatePicker(endDateRef.current)}
+                  onFocus={() => openNativeDatePicker(endDateRef.current)}
+                />
               </div>
             </div>
 
@@ -2904,7 +2916,7 @@ export default function StrategyBuilder({
                     </button>
                   </div>
                   <small className="strategy-inline-note">
-                    Market data stays on PROD. Switching execution to UAT will prompt a separate UAT login the first time.
+                    Market data stays on PROD. No Code live execution is enabled only in UAT, and switching to UAT will prompt a separate UAT login only the first time.
                   </small>
                 </div>
               </div>
@@ -3003,7 +3015,7 @@ export default function StrategyBuilder({
                   onClick={handleDeployLive}
                   disabled={liveBusy || (liveStatus?.running ?? false)}
                 >
-                  {liveBusy ? 'Deploying...' : liveStatus?.running ? 'Live Running' : `Deploy Live${executionEnvironment === 'PROD' ? ' (PROD)' : ' (UAT)'}`}
+                  {liveBusy ? 'Deploying...' : liveStatus?.running ? 'Live Running' : executionEnvironment === 'UAT' ? 'Deploy Live (UAT)' : 'Deploy Live (UAT Only)'}
                 </button>
               ) : null}
             </div>

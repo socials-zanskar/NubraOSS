@@ -502,7 +502,9 @@ class ScalperVolumeBreakoutService:
         Return a deduplicated list of (underlying_symbol, instrument_type) for every
         instrument on the requested exchange that has option contracts in the refdata cache.
 
-        instrument_type is 'INDEX' for known indexes, 'STOCK' for everything else.
+        Volume Breakout Finder is intentionally restricted to stock-style underlyings.
+        Known index instruments like NIFTY / BANKNIFTY are excluded because index
+        candle-volume breakout is not a strong primary scalping signal here.
         """
         rows = instrument_service._get_cached_rows(  # noqa: SLF001
             request.session_token, request.environment, request.device_id
@@ -523,7 +525,10 @@ class ScalperVolumeBreakoutService:
             if not asset:
                 continue
 
-            instrument_type = "INDEX" if asset in INDEX_UNDERLYINGS else "STOCK"
+            if asset in INDEX_UNDERLYINGS:
+                continue
+
+            instrument_type = "STOCK"
             previous = seen.get(asset)
             if previous is None:
                 seen[asset] = (instrument_type, 1)
@@ -533,7 +538,6 @@ class ScalperVolumeBreakoutService:
         prioritized = sorted(
             seen.items(),
             key=lambda item: (
-                0 if item[1][0] == "INDEX" else 1,
                 -item[1][1],
                 item[0],
             ),

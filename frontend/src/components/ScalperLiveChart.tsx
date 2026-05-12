@@ -301,9 +301,21 @@ export default function ScalperLiveChart({
 
     if (candleSeries) {
       const allMarkers: SeriesMarker<UTCTimestamp>[] = []
+      const latestSignalTime = signals.reduce<number | null>((latest, signal) => {
+        for (const point of signal.signals) {
+          const pointTime = point.time as number
+          if (latest == null || pointTime > latest) {
+            latest = pointTime
+          }
+        }
+        return latest
+      }, null)
 
       for (const signal of signals) {
         for (const point of signal.signals) {
+          if (latestSignalTime != null && (point.time as number) === latestSignalTime) {
+            continue
+          }
           allMarkers.push({
             time: point.time as UTCTimestamp,
             position: point.side === 'buy' ? 'belowBar' : 'aboveBar',

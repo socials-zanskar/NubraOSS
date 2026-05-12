@@ -518,16 +518,32 @@ export function useIndicators(): UseIndicatorsReturn {
   const addFromPreset = useCallback((presetKey: string): SavedIndicator | null => {
     const preset = INDICATOR_PRESETS.find((p) => p.key === presetKey)
     if (!preset) return null
+    const presetIndicator = preset.factory()
+    const existingIndicator = indicators.find((ind) => ind.name === presetIndicator.name)
+    if (existingIndicator) {
+      if (!existingIndicator.enabled) {
+        const reenabledIndicator: SavedIndicator = {
+          ...existingIndicator,
+          enabled: true,
+          updatedAt: Date.now(),
+        }
+        setIndicators((prev) =>
+          prev.map((ind) => (ind.id === existingIndicator.id ? reenabledIndicator : ind)),
+        )
+        return reenabledIndicator
+      }
+      return existingIndicator
+    }
     const now = Date.now()
     const indicator: SavedIndicator = {
-      ...preset.factory(),
+      ...presetIndicator,
       id: uid(),
       createdAt: now,
       updatedAt: now,
     }
     setIndicators((prev) => [...prev, indicator])
     return indicator
-  }, [])
+  }, [indicators])
 
   const addCustom = useCallback(
     (partial: Omit<SavedIndicator, 'id' | 'createdAt' | 'updatedAt'>): SavedIndicator => {

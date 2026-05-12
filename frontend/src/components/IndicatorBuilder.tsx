@@ -470,9 +470,9 @@ export default function IndicatorBuilder({
 
   // ── Check if preset already added ─────────────────────────────────────────
 
-  function isPresetAdded(preset: IndicatorPreset): boolean {
+  function getPresetIndicator(preset: IndicatorPreset): SavedIndicator | null {
     const presetName = preset.factory().name
-    return indicators.some((ind) => ind.name === presetName)
+    return indicators.find((ind) => ind.name === presetName) ?? null
   }
 
   return (
@@ -487,11 +487,13 @@ export default function IndicatorBuilder({
 
         <div className="ind-preset-grid">
           {presets.map((preset) => {
-            const added = isPresetAdded(preset)
+            const presetIndicator = getPresetIndicator(preset)
+            const added = Boolean(presetIndicator?.enabled)
+            const canEnable = Boolean(presetIndicator && !presetIndicator.enabled)
             return (
               <div
                 key={preset.key}
-                className={`ind-preset-card${added ? ' is-added' : ''}`}
+                className={`ind-preset-card${added ? ' is-added' : ''}${canEnable ? ' is-disabled' : ''}`}
               >
                 <div className="ind-preset-card-header">
                   <span
@@ -503,10 +505,10 @@ export default function IndicatorBuilder({
                 <p className="ind-preset-desc summary-label">{preset.description}</p>
                 <button
                   type="button"
-                  className={`ind-preset-add-btn scalper-tool-button${added ? ' is-added' : ''}`}
+                  className={`ind-preset-add-btn scalper-tool-button${added ? ' is-added' : ''}${canEnable ? ' is-restore' : ''}`}
                   onClick={() => !added && onAddFromPreset(preset.key)}
                   disabled={added}
-                  title={added ? 'Already added' : `Add ${preset.label}`}
+                  title={added ? 'Already added and enabled' : canEnable ? `Enable ${preset.label}` : `Add ${preset.label}`}
                 >
                   {added ? 'Added ✓' : 'Add'}
                 </button>

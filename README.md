@@ -240,6 +240,61 @@ If you need different values, create:
 
 ## Local Setup
 
+### Quick start for Windows users
+
+After downloading the ZIP or cloning the repo:
+
+1. double-click [Setup NubraOSS.cmd](./Setup%20NubraOSS.cmd)
+2. double-click [Run NubraOSS.cmd](./Run%20NubraOSS.cmd)
+
+That flow will:
+
+- create the backend virtual environment if missing
+- install backend Python dependencies
+- install frontend npm dependencies
+- create `backend/.env` from `backend/.env.example` if needed
+- start backend and frontend locally
+- open NubraOSS in the browser
+
+### Quick start for macOS / Linux users
+
+After downloading the ZIP or cloning the repo:
+
+```bash
+chmod +x ./setup.sh ./run.sh
+./setup.sh
+./run.sh
+```
+
+That flow does the same setup and local startup as the Windows launcher flow.
+
+### Quick start for Codex / Claude / terminal-driven agents
+
+After cloning the repo, an agent can use these exact commands:
+
+On Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -InstallOnly
+powershell -ExecutionPolicy Bypass -File .\run.ps1 -NoOpen
+```
+
+On macOS / Linux:
+
+```bash
+chmod +x ./setup.sh ./run.sh
+./setup.sh --install-only
+./run.sh --no-open
+```
+
+That makes the setup predictable for repo-link workflows where an agent is asked to:
+
+1. clone the repo
+2. install dependencies
+3. start the app
+
+The launcher scripts are intentionally non-interactive and safe for automation.
+
 ### Prerequisites
 
 - Python 3.11+ recommended

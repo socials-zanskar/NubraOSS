@@ -7,3 +7,8 @@ __pycache__/
 .env
 .codex-logs/
 backend/data/
+backend/*.log
+backend/*.err.log
+frontend/*.log
+frontend/*.err.log
+frontend/*.tsbuildinfo
