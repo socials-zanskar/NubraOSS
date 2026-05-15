@@ -2352,6 +2352,11 @@ export default function App() {
 
   async function handleTradingViewConfigure() {
     if (!session || session.is_demo || !webhookExecutionSession) return
+    if (webhookExecutionEnvironment !== 'UAT') {
+      setTradingViewMessage('')
+      setTradingViewError('Webhook order execution is enabled only in UAT for now.')
+      return
+    }
     setTradingViewError(''); setTradingViewActionState('configure')
     try {
       const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview/configure`, {
@@ -2411,6 +2416,11 @@ export default function App() {
 
   async function handleTradingViewTest() {
     if (!session || session.is_demo || !webhookExecutionSession) return
+    if (webhookExecutionEnvironment !== 'UAT') {
+      setTradingViewMessage('')
+      setTradingViewError('Webhook order execution is enabled only in UAT for now.')
+      return
+    }
     setTradingViewError(''); setTradingViewActionState('test')
     try {
       const response = await fetch(`${API_BASE_URL}/api/webhooks/tradingview`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-source': 'test' }, body: JSON.stringify(tradingViewLinePayload) })
@@ -2432,8 +2442,10 @@ export default function App() {
   // Ã¢â€â‚¬Ã¢â€â‚¬ Computed values Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const resolvedTradingViewSecret = tradingViewStatus?.secret ?? tradingViewSecret
   const resolvedTradingViewProduct = tradingViewProduct
-  const tradingViewStrategyPayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Strategy Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: '{{strategy.order.action}}', order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: '{{strategy.order.contracts}}', position_size: '{{strategy.position_size}}', tag: tradingViewTag || undefined }
-  const tradingViewLinePayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Line Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: tradingViewOrderAction, order_delivery_type: resolvedTradingViewProduct, price_type: 'MARKET', order_qty: Number(tradingViewQuantity || '1'), tag: tradingViewTag || undefined }
+  const tradingViewStrategyPayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Strategy Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: '{{strategy.order.action}}', order_delivery_type: resolvedTradingViewProduct, price_type: 'LIMIT', order_qty: '{{strategy.order.contracts}}', position_size: '{{strategy.position_size}}', tag: tradingViewTag || undefined }
+  const tradingViewLinePayload = { secret: resolvedTradingViewSecret || '<your-webhook-secret>', strategy: tradingViewStrategyName || 'Nubra Line Alert', instrument: tradingViewSymbol || 'RELIANCE', exchange: tradingViewExchange || 'NSE', order_side: tradingViewOrderAction, order_delivery_type: resolvedTradingViewProduct, price_type: 'LIMIT', order_qty: Number(tradingViewQuantity || '1'), tag: tradingViewTag || undefined }
+  const tradingViewStrategyJsonCompact = JSON.stringify(tradingViewStrategyPayload)
+  const tradingViewLineJsonCompact = JSON.stringify(tradingViewLinePayload)
   const tradingViewStrategyJson = JSON.stringify(tradingViewStrategyPayload, null, 2)
   const tradingViewLineJson = JSON.stringify(tradingViewLinePayload, null, 2)
   const webhookUrl = tunnelStatus?.public_url ? `${tunnelStatus.public_url}/api/webhooks/tradingview` : ''
@@ -2448,7 +2460,18 @@ export default function App() {
   const clientIdentifier = session?.account_id?.trim() || session?.user_name?.trim().split(' ')[0] || 'Trader'
   const hasTestHistory = (tradingViewStatus?.history ?? []).some((e) => e.source === 'test')
   const executionEnabled = tradingViewStatus?.execution_enabled !== false
-  const nextWebhookAction = !webhookConfigured ? 'Step 1: save your webhook secret and default product.' : !tunnelReady ? 'Step 2: generate the public webhook URL.' : !hasTestHistory ? 'Step 4: send a test payload before going live.' : !executionEnabled ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.' : 'Setup complete. Copy the live URL and payload into TradingView.'
+  const webhookUatOnlyExecution = webhookExecutionEnvironment !== 'UAT'
+  const nextWebhookAction = webhookUatOnlyExecution
+    ? 'Switch webhook execution to UAT and authenticate the UAT session before configuring or testing alerts.'
+    : !webhookConfigured
+      ? 'Step 1: save your webhook secret and default product.'
+      : !tunnelReady
+        ? 'Step 2: generate the public webhook URL.'
+        : !hasTestHistory
+          ? 'Step 4: send a test payload before going live.'
+          : !executionEnabled
+            ? 'Kill switch is on. Re-enable execution before using live TradingView alerts.'
+            : 'Setup complete. Copy the live URL and payload into TradingView.'
 
   // Ã¢â€â‚¬Ã¢â€â‚¬ Scalper local vars Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const { status: liveStatus, error: liveError, connected: liveConnected, registerPanel } = scalperLive
@@ -2604,7 +2627,7 @@ export default function App() {
   if (view === 'tradingview-webhook') {
     const webhookSessionLabel = webhookExecutionSession?.environment ?? webhookExecutionEnvironment
     const webhookUserLabel = webhookExecutionSession?.user_name ?? session?.user_name ?? 'Nubra User'
-    const webhookExecutionReady = Boolean(webhookExecutionSession) && !session?.is_demo
+    const webhookExecutionReady = webhookExecutionEnvironment === 'UAT' && Boolean(webhookExecutionSession) && !session?.is_demo
     return (
       <div className="subview-shell">
         {renderDashboardNav('Webhook')}
@@ -2633,6 +2656,7 @@ export default function App() {
               <span className={`pill-v2 ${executionEnabled ? 'pill-success' : 'pill-danger'}`}>4. Live {executionEnabled ? 'Ready' : 'Blocked'}</span>
             </div>
           </div>
+          {webhookUatOnlyExecution ? <div className="msg-banner">Webhook order placement is enabled only in UAT for now.</div> : null}
 
           {/* Step 1: Configure */}
           <div className="webhook-step-section">
@@ -2738,11 +2762,11 @@ export default function App() {
             <div className="step-heading"><span className={hasTestHistory ? 'step-badge done' : 'step-badge'}>4</span><div><h2>Copy and Test</h2><p>Copy the payload, then send a test before going live.</p></div></div>
             <div className="tradingview-grid">
               <div className="sb-card">
-                <div className="sb-card-head"><div><span className="sb-card-kicker">Strategy JSON</span><h3>Nubra Strategy Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewStrategyJson, 'copy-strategy')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Strategy JSON</span><h3>Nubra Strategy Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewStrategyJsonCompact, 'copy-strategy')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-strategy' ? 'Copying...' : 'Copy JSON'}</button></div>
                 <pre className="code-block webhook-code-block">{tradingViewStrategyJson}</pre>
               </div>
               <div className="sb-card">
-                <div className="sb-card-head"><div><span className="sb-card-kicker">Line Alert JSON</span><h3>Nubra Manual Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewLineJson, 'copy-line')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}</button></div>
+                <div className="sb-card-head"><div><span className="sb-card-kicker">Line Alert JSON</span><h3>Nubra Manual Alert</h3></div><button className="ghost-inline" onClick={() => copyToClipboard(tradingViewLineJsonCompact, 'copy-line')} disabled={!tradingViewStatus?.configured || tradingViewActionState !== null}>{tradingViewActionState === 'copy-line' ? 'Copying...' : 'Copy JSON'}</button></div>
                 <pre className="code-block webhook-code-block">{tradingViewLineJson}</pre>
               </div>
             </div>

@@ -169,7 +169,7 @@ class TradingViewWebhookService:
             "exchange": "NSE",
             "order_side": "{{strategy.order.action}}",
             "order_delivery_type": order_delivery_type,
-            "price_type": "MARKET",
+            "price_type": "LIMIT",
             "order_qty": "{{strategy.order.contracts}}",
             "position_size": "{{strategy.position_size}}",
         }
@@ -182,7 +182,7 @@ class TradingViewWebhookService:
             "exchange": "NSE",
             "order_side": "BUY",
             "order_delivery_type": order_delivery_type,
-            "price_type": "MARKET",
+            "price_type": "LIMIT",
             "order_qty": 1,
         }
 
@@ -269,6 +269,8 @@ class TradingViewWebhookService:
             return self._build_status()
 
     def configure(self, payload: TradingViewWebhookConfigureRequest) -> TradingViewWebhookStatusResponse:
+        if payload.environment != "UAT":
+            raise HTTPException(status_code=403, detail="TradingView webhook order execution is enabled only in UAT for now.")
         secret = (payload.secret or "").strip() or secrets.token_urlsafe(18)
         with self._lock:
             existing_logs = self._config.logs[:] if self._config else []
@@ -377,6 +379,46 @@ class TradingViewWebhookService:
         if product in {"CNC", "DELIVERY", "ORDER_DELIVERY_TYPE_CNC"}:
             return "ORDER_DELIVERY_TYPE_CNC"
         return configured_default
+
+    def _parse_validity_type(self, body: dict[str, Any]) -> str:
+        raw_validity = body.get("validity_type") or body.get("validity")
+        if not isinstance(raw_validity, str) or not raw_validity.strip():
+            return "DAY"
+        validity = raw_validity.strip().upper()
+        if "{{" in validity:
+            raise HTTPException(status_code=400, detail="TradingView placeholders were not resolved for validity_type.")
+        if validity in {"DAY", "IOC", "GTD", "GTC"}:
+            return validity
+        return "DAY"
+
+    def _parse_price_type(self, body: dict[str, Any]) -> str:
+        raw_price_type = body.get("price_type")
+        if not isinstance(raw_price_type, str) or not raw_price_type.strip():
+            return "LIMIT"
+        price_type = raw_price_type.strip().upper()
+        if "{{" in price_type:
+            raise HTTPException(status_code=400, detail="TradingView placeholders were not resolved for price_type.")
+        return "LIMIT"
+
+    def _parse_limit_order_price(self, body: dict[str, Any], tick_size: int) -> int | None:
+        raw_price = body.get("order_price")
+        if raw_price is None:
+            raw_price = body.get("price")
+        if raw_price is None:
+            return None
+        if isinstance(raw_price, str) and "{{" in raw_price:
+            raise HTTPException(status_code=400, detail="TradingView placeholders were not resolved for order_price.")
+        try:
+            rupees = float(raw_price)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="order_price must be numeric.") from None
+        if rupees <= 0:
+            raise HTTPException(status_code=400, detail="order_price must be greater than zero.")
+        paise = int(round(rupees * 100))
+        remainder = paise % tick_size
+        if remainder != 0:
+            paise += tick_size - remainder
+        return paise
 
     def _normalize_order_qty(self, lot_size: int, requested_qty: int) -> int:
         normalized = max(requested_qty, lot_size)
@@ -586,28 +628,40 @@ class TradingViewWebhookService:
         order_delivery_type: str,
         requested_qty: int,
         strategy_name: str,
+        body: dict[str, Any],
     ) -> dict[str, Any]:
         ref_id, lot_size, tick_size = instrument_service.resolve_stock_meta(
             session_token,
             environment,
             device_id,
             symbol,
+            exchange,
         )
         normalized_qty = self._normalize_order_qty(lot_size, requested_qty)
+        price_type = self._parse_price_type(body)
+        validity_type = self._parse_validity_type(body)
         ltp_paise = self._get_current_price_paise(session_token, device_id, environment, symbol, exchange)
-        order_price = self._compute_aggressive_limit_price(tick_size, order_side, ltp_paise)
+        order_price = (
+            self._parse_limit_order_price(body, tick_size)
+            if price_type == "LIMIT"
+            else None
+        )
+        if price_type == "LIMIT" and order_price is None:
+            order_price = self._compute_aggressive_limit_price(tick_size, order_side, ltp_paise)
         payload = {
             "ref_id": ref_id,
+            "exchange": exchange,
             "order_type": "ORDER_TYPE_REGULAR",
             "order_qty": normalized_qty,
             "order_side": order_side,
             "order_delivery_type": order_delivery_type,
-            "validity_type": "IOC",
-            "price_type": "LIMIT",
-            "order_price": order_price,
+            "validity_type": validity_type,
+            "price_type": price_type,
             "tag": f"tv_{strategy_name.lower().replace(' ', '_')}_{symbol.lower()}",
             "algo_params": {},
         }
+        if order_price is not None:
+            payload["order_price"] = order_price
         base_url = self._base_url(environment)
         with httpx.Client(timeout=20.0) as client:
             response = client.post(
@@ -627,6 +681,8 @@ class TradingViewWebhookService:
             "normalized_qty": normalized_qty,
             "ltp_paise": ltp_paise,
             "order_price": order_price,
+            "price_type": price_type,
+            "validity_type": validity_type,
         }
 
     def _fetch_order_snapshot(
@@ -670,6 +726,18 @@ class TradingViewWebhookService:
             provided_secret = self._extract_secret(body, header_secret)
             if provided_secret != config.secret:
                 raise HTTPException(status_code=401, detail="Invalid TradingView webhook secret.")
+            if config.environment != "UAT":
+                self._append_history(
+                    source=source,
+                    status="blocked",
+                    message="TradingView webhook order execution is enabled only in UAT for now.",
+                    strategy=strategy_name,
+                    tag=tag,
+                    instrument=str(body.get("instrument") or body.get("symbol") or "").strip().upper() or None,
+                    exchange=str(body.get("exchange") or "").strip().upper() or None,
+                    payload=payload_for_log,
+                )
+                raise HTTPException(status_code=403, detail="TradingView webhook order execution is enabled only in UAT for now.")
             if not config.execution_enabled:
                 self._append_history(
                     source=source,
@@ -698,6 +766,7 @@ class TradingViewWebhookService:
                 order_delivery_type,
                 quantity,
                 strategy_name,
+                body,
             )
             order = result["order"]
             order_id = int(order.get("order_id", 0) or 0) or None

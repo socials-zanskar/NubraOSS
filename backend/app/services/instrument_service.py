@@ -222,16 +222,26 @@ class InstrumentService:
         environment: str,
         device_id: str,
         instrument: str,
+        exchange: str | None = None,
     ) -> tuple[int, int, int]:
         rows = self.search_stocks(session_token, environment, device_id, instrument, limit=20)
         symbol = instrument.strip().upper()
+        normalized_exchange = exchange.strip().upper() if isinstance(exchange, str) and exchange.strip() else None
         for row in rows:
+            if normalized_exchange and str(row["exchange"]).upper() != normalized_exchange:
+                continue
             if str(row["instrument"]).upper() == symbol:
+                return int(row["ref_id"]), int(row["lot_size"]), int(row["tick_size"])
+        if normalized_exchange:
+            for row in rows:
+                if str(row["exchange"]).upper() != normalized_exchange:
+                    continue
                 return int(row["ref_id"]), int(row["lot_size"]), int(row["tick_size"])
         if rows:
             first = rows[0]
             return int(first["ref_id"]), int(first["lot_size"]), int(first["tick_size"])
-        raise HTTPException(status_code=404, detail=f"Unable to resolve ref_id for {symbol} on NSE.")
+        exchange_label = normalized_exchange or "NSE"
+        raise HTTPException(status_code=404, detail=f"Unable to resolve ref_id for {symbol} on {exchange_label}.")
 
 
 instrument_service = InstrumentService()
